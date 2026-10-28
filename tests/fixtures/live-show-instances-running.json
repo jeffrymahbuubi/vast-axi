@@ -1,0 +1,28 @@
+[
+  {
+    "id": 4000001,
+    "label": "vast-axi-smoke",
+    "gpu_name": "GTX 1080",
+    "num_gpus": 1,
+    "actual_status": "running",
+    "intended_status": "running",
+    "dph_total": 0.04891851851851852,
+    "storage_cost": 0.1333333333333333,
+    "disk_space": 10,
+    "start_date": 1760000000.2222798,
+    "gpu_util": 0,
+    "image_uuid": "ubuntu:22.04",
+    "image_runtype": "ssh_direc ssh_proxy",
+    "status_msg": "success, running ubuntu_22.04/ssh",
+    "ssh_host": "ssh0.example.invalid",
+    "ssh_port": 22001,
+    "public_ipaddr": "192.0.2.10",
+    "ports": {
+      "22/tcp": [
+        {
+          "HostPort": "40022"
+        }
+      ]
+    }
+  }
+]

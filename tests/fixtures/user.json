@@ -1,0 +1,10 @@
+{
+  "id": 1000000,
+  "username": "test-user",
+  "email": "user@example.test",
+  "balance": 12.3456,
+  "credit": 12.3456,
+  "balance_threshold_enabled": false,
+  "balance_threshold": 0,
+  "can_pay": true
+}

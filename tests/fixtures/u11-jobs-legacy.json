@@ -1,0 +1,20 @@
+[
+  {
+    "id": 5100,
+    "api_endpoint": "/api/v0/instances/42/",
+    "request_body": {},
+    "request_method": "DELETE",
+    "user_id": 1000000,
+    "instance_id": 42,
+    "machine_id": 2000042,
+    "start_time": 1792554600.0,
+    "end_time": 1792563000.0,
+    "frequency": "HOURLY",
+    "day_of_the_week": null,
+    "hour_of_the_day": null,
+    "min_of_the_hour": null,
+    "last_executed_around": null,
+    "status": null,
+    "rights_id": null
+  }
+]

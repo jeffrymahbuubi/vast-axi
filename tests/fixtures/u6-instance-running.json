@@ -1,0 +1,19 @@
+{
+  "id": 42,
+  "machine_id": 2000042,
+  "label": "u6",
+  "image_uuid": "example/image:latest",
+  "image_runtype": "ssh_direc ssh_proxy",
+  "gpu_name": "RTX 4090",
+  "num_gpus": 1,
+  "dph_total": 0.4,
+  "actual_status": "running",
+  "intended_status": "running",
+  "cur_state": "running",
+  "next_state": "running",
+  "status_msg": "",
+  "ssh_host": "1.2.3.4",
+  "ssh_port": 2222,
+  "public_ipaddr": "5.6.7.8",
+  "start_date": 1760000000.5
+}

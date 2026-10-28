@@ -1,0 +1,2 @@
+copying C.42:/a C.43:/b
+Remote to Remote copy initiated - check instance status bar for progress updates (~30 seconds delayed).
