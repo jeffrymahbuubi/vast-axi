@@ -124,8 +124,7 @@ describe("ssh", () => {
           "-o",
           "BatchMode=yes",
           "root@1.2.3.4",
-          "nvidia-smi",
-          "-L",
+          "nvidia-smi -L",
         ],
         capture: true,
       },
@@ -168,6 +167,75 @@ describe("ssh", () => {
     });
     expect(out.exitCode).toBe(1);
     expect(out.stdout).toContain("code: TRANSFER_TOOL_MISSING");
+  });
+
+  it("E111: words after -- reach ssh as ONE quoted remote argument", async () => {
+    const { registry, calls } = sshRegistry({ stdout: "x" });
+    await runCli(
+      ["ssh", "42", "--exec", "--", "python", "-c", "import a; print('x')"],
+      { registry },
+    );
+    expect(calls[0]!.args.at(-1)).toBe(
+      `python -c 'import a; print('\\''x'\\'')'`,
+    );
+    expect(calls[0]!.args.slice(-2, -1)).toEqual(["root@1.2.3.4"]);
+  });
+
+  it("E112: one quoted word is sent unchanged", async () => {
+    const { registry, calls } = sshRegistry({ stdout: "x" });
+    await runCli(["ssh", "42", "--exec", "--", "cd /w && ls | head"], {
+      registry,
+    });
+    expect(calls[0]!.args.at(-1)).toBe("cd /w && ls | head");
+  });
+
+  it("E116: exit 2 with stderr shows the stderr field; with no output it gives the quoting help", async () => {
+    const withErr = sshRegistry({ exitCode: 2, stderr: "bash: oops" });
+    const a = await runCli(["ssh", "42", "--exec", "--", "false"], {
+      registry: withErr.registry,
+    });
+    expect(a.stdout).toContain("stderr: ");
+    expect(a.stdout).toContain("bash: oops");
+    expect(a.stdout).not.toContain("printed nothing");
+    const silent = sshRegistry({ exitCode: 2 });
+    const b = await runCli(["ssh", "42", "--exec", "--", "false"], {
+      registry: silent.registry,
+    });
+    expect(b.stdout).toContain("The remote command printed nothing");
+    expect(b.stdout).toContain("ONE quoted string");
+    const fine = sshRegistry({ exitCode: 0 });
+    const c = await runCli(["ssh", "42", "--exec", "--", "true"], {
+      registry: fine.registry,
+    });
+    expect(c.stdout).not.toContain("printed nothing");
+  });
+
+  it("E119: a word Git Bash rewrote is refused with the MSYS hint before any vastai call", async () => {
+    for (const word of [
+      "C:/Program Files/Git/workspace/x",
+      "--out=C:/Program Files/Git/w",
+    ]) {
+      const { registry, calls } = sshRegistry();
+      const log = newCallLog();
+      const out = await runCli(["ssh", "42", "--exec", "--", "ls", word], {
+        env: { FAKE_VASTAI_LOG: log },
+        registry,
+      });
+      expect(out.exitCode).toBe(2);
+      expect(out.stdout).toContain("MSYS_NO_PATHCONV=1");
+      expect(calls).toHaveLength(0);
+      expect(readCallLog(log)).toHaveLength(0);
+    }
+  });
+
+  it("E121: no ssh client means TRANSFER_TOOL_MISSING and zero vastai calls", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "vast-axi-nopath-"));
+    const log = newCallLog();
+    const out = await runCli(["ssh", "42", "--exec", "--", "true"], {
+      env: { PATH: empty, FAKE_VASTAI_LOG: log },
+    });
+    expect(out.stdout).toContain("code: TRANSFER_TOOL_MISSING");
+    expect(readCallLog(log)).toHaveLength(0);
   });
 
   it("E20: an unknown flag exits 2 and lists the valid flags", async () => {

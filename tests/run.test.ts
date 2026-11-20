@@ -1,4 +1,8 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { findBash, runBash } from "./helpers/bash.js";
 import { REGISTRY, type Registry } from "../src/commands/index.js";
 import * as run from "../src/commands/run.js";
 import { shellQuote } from "../src/job.js";
@@ -75,6 +79,74 @@ describe("run", () => {
     expect(launcher).toContain(`LOG=${shellQuote("/workspace/proj/run.log")}`);
     expect(launcher).toContain('d="$HOME/.vast-axi/jobs/main"');
     expect(embeddedRunScript(launcher)).toContain("bash -c 'echo hi'");
+  });
+
+  it('E114: `run -- bash -c "a && b"` embeds one quoted command that runs both parts', async () => {
+    const { registry, calls } = runRegistry(() => started());
+    await runCli(["run", "42", "--", "bash", "-c", "echo one && echo two"], {
+      registry,
+    });
+    const script = embeddedRunScript(decodeRemote(calls[0]!.args));
+    expect(script).toContain(
+      `bash -c ${shellQuote("bash -c 'echo one && echo two'")}`,
+    );
+    const bash = findBash();
+    if (bash) {
+      const r = await runBash(bash, ["-c", "bash -c 'echo one && echo two'"]);
+      expect(r.stdout.replace(/\r/g, "")).toBe("one\ntwo\n");
+    }
+  });
+
+  it("E117: --name smoke logs to <cwd>/smoke.log, main to run.log, --log wins", async () => {
+    const cases: Array<[string[], string]> = [
+      [["--name", "smoke"], "/workspace/smoke.log"],
+      [["--name", "main"], "/workspace/run.log"],
+      [["--name", "smoke", "--log", "/data/x.log"], "/data/x.log"],
+    ];
+    for (const [flags, expected] of cases) {
+      const { registry, calls } = runRegistry(() => started());
+      await runCli(["run", "42", ...flags, "--", "true"], { registry });
+      expect(decodeRemote(calls[0]!.args)).toContain(
+        `LOG=${shellQuote(expected)}`,
+      );
+    }
+  });
+
+  it("E118: two named jobs in one cwd get different logs and both start", async () => {
+    const logs: string[] = [];
+    for (const name of ["a", "b"]) {
+      const { registry, calls } = runRegistry(() => started({ name }));
+      const out = await runCli(["run", "42", "--name", name, "--", "true"], {
+        registry,
+      });
+      expect(out.exitCode).toBe(0);
+      expect(out.stdout).not.toContain("LOG_EXISTS");
+      logs.push(/LOG='([^']+)'/.exec(decodeRemote(calls[0]!.args))![1]!);
+    }
+    expect(new Set(logs).size).toBe(2);
+  });
+
+  it("E119: a rewritten Git Bash path in the program exits 2 before any call", async () => {
+    const { registry, calls } = runRegistry(() => started());
+    const log = newCallLog();
+    const out = await runCli(
+      ["run", "42", "--", "ls", "C:/Program Files/Git/workspace/x"],
+      { env: { FAKE_VASTAI_LOG: log }, registry },
+    );
+    expect(out.exitCode).toBe(2);
+    expect(out.stdout).toContain("MSYS_NO_PATHCONV=1");
+    expect(calls).toHaveLength(0);
+    expect(readCallLog(log)).toHaveLength(0);
+  });
+
+  it("E121: no ssh client means TRANSFER_TOOL_MISSING and zero vastai calls", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "vast-axi-nopath-"));
+    const log = newCallLog();
+    const out = await runCli(["run", "42", "--", "true"], {
+      env: { PATH: empty, FAKE_VASTAI_LOG: log },
+    });
+    expect(out.stdout).toContain("code: TRANSFER_TOOL_MISSING");
+    expect(readCallLog(log)).toHaveLength(0);
   });
 
   it("--log relative resolves against --cwd, --name selects the job dir", async () => {

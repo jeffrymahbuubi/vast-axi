@@ -1,7 +1,6 @@
 // Runs the generated onstart text under a REAL local bash with HOME pointed at
 // a temp dir (Git Bash on Windows). python3/pip/setsid are shims; no ssh,
 // scp or vastai, and nothing is installed.
-import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -21,7 +20,13 @@ import {
   type JobRecord,
 } from "../src/job.js";
 import { buildOnstartText, type OnstartSpec } from "../src/onstart.js";
-import { WIN, bashPath, findBash, heredocBody } from "./helpers/bash.js";
+import {
+  WIN,
+  bashPath,
+  findBash,
+  heredocBody,
+  runBash,
+} from "./helpers/bash.js";
 
 const bash = findBash();
 const suite = bash ? describe : describe.skip;
@@ -68,8 +73,7 @@ suite("the onstart text under real bash", () => {
     e["HOME"] = home;
     return e;
   };
-  const sh = (script: string) =>
-    spawnSync(bash!, ["-c", script], { encoding: "utf8", env: env() });
+  const sh = (script: string) => runBash(bash!, ["-c", script], { env: env() });
 
   const spec = (over: Partial<OnstartSpec>): OnstartSpec => ({
     token: TOKEN,
@@ -78,12 +82,14 @@ suite("the onstart text under real bash", () => {
   });
   const boot = (over: Partial<OnstartSpec>) => sh(buildOnstartText(spec(over)));
 
-  const probe = (): JobRecord | undefined => {
+  const probe = async (): Promise<JobRecord | undefined> => {
     const r = parseProbeOutput(
-      sh(
-        buildRemoteCommand(
-          buildProbeScript({ kind: "name", name: "onstart" }, 50),
-        ),
+      (
+        await sh(
+          buildRemoteCommand(
+            buildProbeScript({ kind: "name", name: "onstart" }, 50),
+          ),
+        )
       ).stdout,
     );
     return r.kind === "jobs" ? r.jobs[0] : undefined;
@@ -97,7 +103,7 @@ suite("the onstart text under real bash", () => {
   async function settled(): Promise<JobRecord> {
     let lost = 0;
     for (let i = 0; i < 80; i++) {
-      const rec = probe();
+      const rec = await probe();
       const state = rec ? jobStatus(rec).state : "running";
       lost = state === "lost" ? lost + 1 : 0;
       if (rec && (state === "finished" || state === "failed" || lost >= 8)) {
@@ -110,7 +116,7 @@ suite("the onstart text under real bash", () => {
   /** Wait until the freshly started job is reported running. */
   async function running(): Promise<JobRecord> {
     for (let i = 0; i < 40; i++) {
-      const rec = probe();
+      const rec = await probe();
       if (rec && jobStatus(rec).state === "running") return rec;
       await wait(100);
     }
@@ -119,28 +125,27 @@ suite("the onstart text under real bash", () => {
   const read = (rel: string) => readFileSync(join(home, rel), "utf8");
   const jobFile = (f: string) => read(`.vast-axi/jobs/onstart/${f}`);
 
-  it("the text, its launcher and run.sh all pass `bash -n`", () => {
+  it("the text, its launcher and run.sh all pass `bash -n`", async () => {
     fresh();
     const text = buildOnstartText(
       spec({ pip: ["numpy", "pandas>=2"], script: "echo hi\nls | wc -l\n" }),
     );
-    const check = (code: string) =>
-      spawnSync(bash!, ["-n"], { input: code, encoding: "utf8" });
-    expect(check(text).status).toBe(0);
+    const check = (code: string) => runBash(bash!, ["-n"], { input: code });
+    expect((await check(text)).status).toBe(0);
     const launcher = Buffer.from(
       /echo (\S+) \| base64/.exec(text)![1]!,
       "base64",
     ).toString("utf8");
-    expect(check(launcher).status).toBe(0);
+    expect((await check(launcher)).status).toBe(0);
     const run = heredocBody(launcher, "run.sh");
     expect(run).toContain("#!/bin/bash");
-    expect(check(run).status).toBe(0);
+    expect((await check(run)).status).toBe(0);
   });
 
   it("script only: runs in the home dir, keeps the script byte for byte, job finished", async () => {
     fresh();
     const script = `echo "start $PWD"\nprintf '%s\\n' "it's $HOME" '$(no)' "\u00fcn\u00ef \u2603"\n`;
-    const r = boot({ script });
+    const r = await boot({ script });
     expect(r.status).toBe(0);
     const rec = await settled();
     expect(jobStatus(rec)).toMatchObject({ state: "finished", exitCode: 0 });
@@ -158,7 +163,7 @@ suite("the onstart text under real bash", () => {
 
   it("pip only: python3 -m pip install with the quoted specs, job finished", async () => {
     fresh();
-    boot({ pip: ["numpy==1.26.4", "uvicorn[standard]>=0.30"] });
+    await boot({ pip: ["numpy==1.26.4", "uvicorn[standard]>=0.30"] });
     const rec = await settled();
     expect(jobStatus(rec).state).toBe("finished");
     expect(read("pip.log")).toBe(
@@ -171,7 +176,7 @@ suite("the onstart text under real bash", () => {
 
   it("both: pip runs first, then the script", async () => {
     fresh();
-    boot({
+    await boot({
       pip: ["numpy"],
       script: `echo setup >> "$HOME/order.log"\necho script-output\n`,
     });
@@ -184,7 +189,7 @@ suite("the onstart text under real bash", () => {
   it("both: a failing pip step fails the job and the script never runs", async () => {
     fresh();
     writeFileSync(join(home, "pip-rc"), "1");
-    boot({
+    await boot({
       pip: ["numpy"],
       script: `echo setup >> "$HOME/order.log"\n`,
     });
@@ -197,7 +202,7 @@ suite("the onstart text under real bash", () => {
 
   it("both: a failing script fails the job with its exit code", async () => {
     fresh();
-    boot({ pip: ["numpy"], script: "echo before\nexit 3\n" });
+    await boot({ pip: ["numpy"], script: "echo before\nexit 3\n" });
     const rec = await settled();
     expect(jobStatus(rec)).toMatchObject({ state: "failed", exitCode: 3 });
     expect(jobFile("onstart.log")).toContain("before");
@@ -206,13 +211,13 @@ suite("the onstart text under real bash", () => {
   it("E78: a second start replaces the record, so job and status see the latest boot", async () => {
     fresh();
     const script = `echo x >> "$HOME/boots"\necho "boot $(wc -l < "$HOME/boots" | tr -d ' ')"\n`;
-    boot({ script });
+    await boot({ script });
     const first = await settled();
     expect(jobStatus(first).state).toBe("finished");
     expect(jobFile("onstart.log")).toContain("boot 1");
 
     // The container restarts: vast.ai runs the same stored text again.
-    boot({ script });
+    await boot({ script });
     const second = await settled();
     expect(jobStatus(second).state).toBe("finished");
     const log = jobFile("onstart.log");
@@ -230,10 +235,10 @@ suite("the onstart text under real bash", () => {
 echo late
 `;
     writeFileSync(go, "");
-    boot({ script });
+    await boot({ script });
     expect(jobStatus(await settled()).state).toBe("finished");
     rmSync(go);
-    boot({ script });
+    await boot({ script });
     const during = await running();
     expect(during.markerLine).toBeUndefined();
     expect(during.exitFile).toBeUndefined();
@@ -243,7 +248,7 @@ echo late
 
   it("creates the job dir and cwd layout the `job` probe reads", async () => {
     fresh();
-    boot({ script: "true\n" });
+    await boot({ script: "true\n" });
     const rec = await settled();
     expect(rec.name).toBe("onstart");
     expect(rec.cwd).toBe(bashPath(home));

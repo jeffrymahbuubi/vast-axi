@@ -1,6 +1,6 @@
 // Finding a real local bash for the tests that run generated scripts under it.
-import { spawnSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { delimiter, dirname, join } from "node:path";
 import { findOnPath } from "../../src/transfer.js";
 
 export const WIN = process.platform === "win32";
@@ -40,4 +40,48 @@ export function heredocBody(launcher: string, target: string): string {
   const delim = lines[start]!.slice(lines[start]!.indexOf("<<'") + 3, -1);
   const end = lines.indexOf(delim, start + 1);
   return `${lines.slice(start + 1, end).join("\n")}\n`;
+}
+
+/**
+ * The env with the directory of `bash` first on PATH, so a nested `bash -c`
+ * in a script resolves to the same bash. On Windows a PowerShell PATH lists
+ * System32\bash.exe (the WSL launcher) before Git Bash.
+ */
+function bashFirstOnPath(
+  env: NodeJS.ProcessEnv,
+  bash: string,
+): NodeJS.ProcessEnv {
+  // Windows only: elsewhere dirname(bash) is /usr/bin, and putting it first
+  // would shadow the shims (fake python3, setsid) a test puts on PATH.
+  if (!WIN) return env;
+  const key =
+    Object.keys(env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+  const dir = dirname(bash);
+  const parts = (env[key] ?? "").split(delimiter);
+  // A test that already placed the bash dir (after its shims) keeps its order.
+  if (parts.some((p) => p.toLowerCase() === dir.toLowerCase())) return env;
+  return { ...env, [key]: [dir, ...parts].join(delimiter) };
+}
+
+/** Async bash run: never blocks the vitest worker (spawnSync starves its RPC heartbeat). */
+export function runBash(
+  bash: string,
+  args: string[],
+  opts: { input?: string; env?: NodeJS.ProcessEnv; cwd?: string } = {},
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bash, args, {
+      env: bashFirstOnPath(opts.env ?? process.env, bash),
+      cwd: opts.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+    child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(opts.input ?? "");
+  });
 }

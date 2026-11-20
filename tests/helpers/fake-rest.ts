@@ -39,8 +39,15 @@ export const scheduleOk = (id = 5081): RestReply => ({
   body: { success: true, scheduled_job_id: id, msg: "scheduled" },
 });
 
+/** The success answer for PUT /api/v0/commands/schedule_job/<id>/ (the timer update). */
+export const updateOk = (): RestReply => ({
+  status: 200,
+  body: { success: true, msg: "updated" },
+});
+
 /**
- * A local stand-in for console.vast.ai (no network). Every request is recorded;
+ * A local stand-in for console.vast.ai (no network). Every request is recorded,
+ * whatever its method (POST and PUT are both used);
  * `handler` decides the answer (default: the success answer with job id 5081).
  */
 export async function startFakeRest(

@@ -6,6 +6,9 @@ import { AxiError } from "./errors.js";
 import { money, round } from "./format.js";
 import { vastJson } from "./vastai.js";
 
+/** Disk size in GB that `rent` creates and `search` prices offers for, unless `--disk` says otherwise. */
+export const DEFAULT_DISK_GB = 20;
+
 /** Longest estimate window: 30 days. */
 export const MAX_HOURS = 720;
 

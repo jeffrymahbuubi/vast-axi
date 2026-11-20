@@ -139,12 +139,13 @@ function snippet(json: unknown, text: string, key: string): string {
 }
 
 /**
- * POST a JSON body to `<base><path>` with the key as a bearer token. Resolves
+ * POST or PUT a JSON body to `<base><path>` with the key as a bearer token. Resolves
  * only for HTTP 2xx; everything else (network error, timeout, non-2xx) throws a
  * RestError whose message never contains the key. Redirects are refused so the
  * key can never be forwarded to another host. No shell, no retries.
  */
-export async function restPost(
+export async function restRequest(
+  method: "POST" | "PUT",
   path: string,
   body: unknown,
   apiKey: string,
@@ -157,7 +158,7 @@ export async function restPost(
     let text: string;
     try {
       const res = await fetch(`${apiBaseUrl()}${path}`, {
-        method: "POST",
+        method,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
@@ -201,4 +202,13 @@ export async function restPost(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** POST a JSON body (see `restRequest`). */
+export function restPost(
+  path: string,
+  body: unknown,
+  apiKey: string,
+): Promise<RestResponse> {
+  return restRequest("POST", path, body, apiKey);
 }

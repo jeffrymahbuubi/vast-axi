@@ -2,11 +2,12 @@
 // parsing, the scp argument builder, display quoting, and the spawner that
 // tests replace so no real ssh or scp ever starts.
 import { spawn } from "node:child_process";
-import { statSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join, posix } from "node:path";
 import { AxiError } from "./errors.js";
 import type { Endpoint } from "./endpoint.js";
 import { truncate } from "./format.js";
+import { classifySshFailure, failureHints } from "./ssh-failure.js";
 
 /** Result of one finished ssh or scp run. */
 export interface ToolRun {
@@ -64,9 +65,14 @@ export const spawnTool: ToolSpawner = (file, args, opts) =>
     );
   });
 
-function isFile(path: string): boolean {
+function isFile(path: string, needExec = false): boolean {
   try {
-    return statSync(path).isFile();
+    if (!statSync(path).isFile()) return false;
+    // N3: on posix a file without the execute bit cannot be started.
+    if (needExec && process.platform !== "win32") {
+      accessSync(path, constants.X_OK);
+    }
+    return true;
   } catch {
     return false;
   }
@@ -81,7 +87,7 @@ const SHIM = /\.(cmd|bat)$/i;
  */
 export function findOnPath(
   name: string,
-  opts: { skipShims?: boolean } = {},
+  opts: { skipShims?: boolean; executable?: boolean } = {},
 ): string | undefined {
   const dirs = (process.env["PATH"] ?? "").split(delimiter).filter(Boolean);
   const exts =
@@ -92,7 +98,11 @@ export function findOnPath(
     for (const ext of exts) {
       const candidate = join(dir, name + ext);
       if (opts.skipShims && SHIM.test(candidate)) continue;
-      if (isFile(candidate)) return candidate;
+      // N2: on Windows an extensionless file cannot be started by spawn.
+      if (opts.executable && ext === "" && process.platform === "win32") {
+        continue;
+      }
+      if (isFile(candidate, opts.executable)) return candidate;
     }
   }
   return undefined;
@@ -110,9 +120,9 @@ function installHint(): string {
  * a shell fails with EINVAL; a later real executable on PATH is used instead.
  */
 export function requireTool(name: "ssh" | "scp"): string {
-  const found = findOnPath(name, { skipShims: true });
+  const found = findOnPath(name, { skipShims: true, executable: true });
   if (found) return found;
-  const shim = findOnPath(name);
+  const shim = findOnPath(name, { executable: true });
   if (shim) {
     throw new AxiError(
       `\`${name}\` on PATH is a batch shim (${shim}) that vast-axi cannot run`,
@@ -123,7 +133,13 @@ export function requireTool(name: "ssh" | "scp"): string {
   throw new AxiError(
     `\`${name}\` was not found on PATH`,
     "TRANSFER_TOOL_MISSING",
-    [installHint(), "Then rerun the same command"],
+    [
+      installHint(),
+      ...(process.platform === "win32"
+        ? [`Or make sure a real ${name}.exe is on PATH`]
+        : []),
+      "Then rerun the same command",
+    ],
   );
 }
 
@@ -278,10 +294,7 @@ export async function runSsh(
     throw new AxiError(
       `ssh could not connect to #${id}: ${truncate(run.stderr.trim(), 300) || "connection failed"}`,
       "SSH_FAILED",
-      [
-        `Run \`vast-axi status ${id}\` to check the instance is running`,
-        "The account needs an ssh key attached on vast.ai for key login to work",
-      ],
+      failureHints(classifySshFailure(run.stderr), id, endpoint),
     );
   }
   return { run, sshArgs };

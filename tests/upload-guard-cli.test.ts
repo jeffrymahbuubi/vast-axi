@@ -13,11 +13,14 @@ const hfToken = (): string => `hf_${rep("a", 34)}`;
 
 function copyRegistry(): { registry: Registry; spawned: string[][] } {
   const spawned: string[][] = [];
-  const spawn: ToolSpawner = (_file, args) => {
+  const spawn: ToolSpawner = (file, args) => {
+    if (file === "ssh") {
+      return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+    }
     spawned.push(args);
     return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
   };
-  const command = copy.createCopyCommand({ spawn, resolveTool: () => "scp" });
+  const command = copy.createCopyCommand({ spawn, resolveTool: (n) => n });
   return {
     spawned,
     registry: {
@@ -150,7 +153,7 @@ describe("copy upload guard", () => {
     expect(out.stdout).not.toContain("allowed_secrets");
   });
 
-  it("a clean upload prints only copy, command and exit_code", async () => {
+  it("a clean upload prints only copy, command, exit_code and ensured_dir", async () => {
     const root = tree({ "src/main.py": "print(1)\n", "README.md": "# hi\n" });
     const { registry, spawned } = copyRegistry();
     const out = await runCli(["copy", root, "C.42:/workspace/p"], { registry });
@@ -160,7 +163,7 @@ describe("copy upload guard", () => {
       .split("\n")
       .filter((l) => /^[a-z_]+:/.test(l))
       .map((l) => l.split(":")[0]);
-    expect(keys).toEqual(["copy", "command", "exit_code"]);
+    expect(keys).toEqual(["copy", "command", "exit_code", "ensured_dir"]);
   });
 
   it("--help documents --allow-secrets", async () => {

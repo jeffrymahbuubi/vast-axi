@@ -3,6 +3,8 @@
 import { normalize } from "node:path";
 import * as finish from "../../src/commands/finish.js";
 import { REGISTRY, type Registry } from "../../src/commands/index.js";
+import { formatDuration } from "../../src/format.js";
+import type { TimerNote } from "../../src/timer-note.js";
 import type { ToolRun } from "../../src/transfer.js";
 import {
   decodeRemote,
@@ -27,7 +29,35 @@ export const sshDown: ToolRun = {
 export const listing = (...files: Array<[number, string]>) =>
   `@vaxi spec 0\n${files.map(([s, p]) => `${s} ${p}`).join("\n")}\n@vaxi end\n`;
 
+/** A destroy timer `leftSec` away, shaped like `timerNote` output (warns inside 30 minutes). */
+export function timerOf(leftSec: number): TimerNote {
+  const left = formatDuration(leftSec);
+  const at = "2026-10-20T17:00Z";
+  const near = leftSec <= 1800;
+  return {
+    fields: {
+      destroy_at: at,
+      timer_left: left,
+      ...(near
+        ? {
+            timer_warning: `destroy timer fires in ${left} (${at}): the instance and everything on it are deleted then`,
+          }
+        : {}),
+    },
+    help: near
+      ? [
+          "Extend it: `vast-axi timer 42 --max-hours <n>` (2 to 23 h from now)",
+          "Or fetch now: `vast-axi finish 42 --fetch-partial --fetch <remote>:<local>`",
+        ]
+      : [],
+    leftSec,
+    destroyAtSec: 1792515600,
+  };
+}
+
 export interface World {
+  /** The destroy timer the fake lookup reports (default: none). */
+  timer?: TimerNote;
   /** Replies to successive probes; the last one repeats. */
   probes: ToolRun[];
   /** Reply to the remote file listing. */
@@ -45,6 +75,7 @@ export function build(world: World) {
   let now = 0;
   let probeIndex = 0;
   const scpCalls: SpawnCall[] = [];
+  const timerCalls: Array<{ withinSec?: number } | undefined> = [];
   const listCalls: SpawnCall[] = [];
   const { spawn, calls } = recordingSpawner((call) => {
     if (call.file === "scp") {
@@ -74,12 +105,25 @@ export function build(world: World) {
     },
     stat: (p) => files.get(normalize(p)),
     mkdirp: () => undefined,
+    timerNote: (_id, opts) => {
+      timerCalls.push(opts);
+      return Promise.resolve(world.timer ?? { fields: {}, help: [] });
+    },
   });
   const registry: Registry = {
     home: REGISTRY.home,
     commands: { ...REGISTRY.commands, finish: { command, help: finish.help } },
   };
-  return { registry, calls, scpCalls, listCalls, sleeps, files, put };
+  return {
+    registry,
+    calls,
+    scpCalls,
+    listCalls,
+    sleeps,
+    files,
+    put,
+    timerCalls,
+  };
 }
 
 export const withLog = () => {

@@ -6,18 +6,18 @@ import {
   takePositional,
 } from "../args.js";
 import { totalBurnPerHr, type BurnInstance } from "../burn.js";
-import { loadConfig, type Config } from "../config.js";
+import { loadConfig } from "../config.js";
 import { AxiError, mapVastError, parseError } from "../errors.js";
 import {
+  DEFAULT_DISK_GB,
   costFor,
   pctOfBalance,
   readBalance,
   takeHoursFlag,
   type BalanceReading,
 } from "../estimate.js";
-import { isoMinute, nowSec, planDestroy } from "../destroy-timer.js";
-import type { DestroyPlan } from "../destroy-timer.js";
-import { money, round } from "../format.js";
+import { nowSec, planDestroy } from "../destroy-timer.js";
+import { money } from "../format.js";
 import { buildHelp } from "../help.js";
 import {
   ONSTART_FLAGS,
@@ -25,18 +25,14 @@ import {
   prepareOnstart,
   takeOnstartFlags,
 } from "../rent-onstart.js";
+import { refusal, usd, type BurnReading } from "../rent-refusal.js";
 import { armDestroyTimer, takeMaxHoursFlag } from "../rent-timer.js";
-import {
-  decideSpend,
-  type GuardDecision,
-  type GuardReason,
-} from "../spend-guard.js";
+import { decideSpend } from "../spend-guard.js";
 import { requireApiKey } from "../vast-rest.js";
 import { vastJson } from "../vastai.js";
 import type { VastCommand } from "./types.js";
 
 const USAGE = "vast-axi rent <offer-id> --image <image> [flags]";
-const DEFAULT_DISK_GB = 20;
 
 export const help = buildHelp({
   usage: `${USAGE}\n       vast-axi rent <offer-id> --template <hash> [flags]`,
@@ -69,7 +65,7 @@ export const help = buildHelp({
     "vast.ai stores the onstart text on the instance record (host and account readers can see it) and re-runs it on every container start; credential-shaped strings are refused unless --allow-secrets",
     "the whole onstart text may be at most 4048 characters: for a longer script use `vast-axi copy` then `vast-axi run`",
     "rent always creates an on-demand instance (output type: on-demand); there is no interruptible option",
-    "the price is checked for the requested --disk size just before the instance is created; the output shows it as priced_for_disk_gb, and `search` lists prices for vast.ai's default storage, so the rent price can differ slightly",
+    `the price is checked for the requested --disk size just before the instance is created; the output shows it as priced_for_disk_gb; \`search --disk <gb>\` prices offers for the same disk size (both default to ${DEFAULT_DISK_GB} GB)`,
   ],
   examples: [
     "vast-axi rent 12345 --image vastai/base-image",
@@ -153,13 +149,6 @@ async function lookupOffer(
   };
 }
 
-interface BurnReading {
-  /** Current burn in USD/hr; null when it could not be read (the guard then fails closed). */
-  burn: number | null;
-  /** Why the reading failed, for the refusal message. */
-  failure?: string;
-}
-
 async function readBurn(): Promise<BurnReading> {
   try {
     const body = await vastJson<unknown>(["show", "instances"]);
@@ -176,119 +165,6 @@ async function readBurn(): Promise<BurnReading> {
           : String(error);
     return { burn: null, failure };
   }
-}
-
-const usd = (n: number): string => `$${money(n, 4)}/hr`;
-
-/** Turn a refusal into the AxiError the agent sees. Soft refusals are VALIDATION_ERROR (exit 2). */
-function refusal(
-  refused: Extract<GuardDecision, { allow: false }>,
-  ctx: {
-    offerId: number;
-    price: number | null;
-    burn: BurnReading;
-    config: Config;
-    hours?: number | undefined;
-    balance: BalanceReading;
-    /** `--max-hours` plan and the offer's contract left, for CONTRACT_SHORT. */
-    timer?: { maxHours: number; plan: DestroyPlan; leftSec: number | null };
-  },
-): AxiError {
-  const { offerId, price, burn, config, hours, balance, timer } = ctx;
-  const has = (r: GuardReason): boolean => refused.reasons.includes(r);
-  const limitsHint = `Change the limits with VAST_AXI_MAX_DPH / VAST_AXI_MAX_BURN or ${config.path}`;
-
-  if (has("PRICE_UNKNOWN")) {
-    return new AxiError(
-      `Offer ${offerId} has no usable price, so the spend guard cannot check it (--confirm does not override this)`,
-      "PRICE_UNKNOWN",
-      ["Run `vast-axi search --limit 10` and pick another offer"],
-    );
-  }
-  if (has("BURN_UNKNOWN")) {
-    return new AxiError(
-      `Cannot read current burn (${burn.failure ?? "unknown"}), so the spend guard refuses to rent (--confirm does not override this)`,
-      "BURN_UNKNOWN",
-      [
-        "Retry `vast-axi rent` once the account can be read",
-        "Run `vast-axi` to check account and instance state",
-      ],
-    );
-  }
-  if (has("BALANCE_UNKNOWN")) {
-    return new AxiError(
-      `Cannot read the account balance (${balance.failure ?? "unknown"}), so --hours cannot be checked against it and the spend guard refuses to rent (--confirm does not override this)`,
-      "BALANCE_UNKNOWN",
-      [
-        "Retry `vast-axi rent` once the account can be read",
-        "Run `vast-axi` to check account and instance state",
-        "Or rent without --hours to apply only the per-hour limits",
-      ],
-    );
-  }
-  if (has("LIMITS_INVALID")) {
-    return new AxiError(
-      "The spend limits are not positive numbers, so the spend guard refuses to rent",
-      "CONFIG_ERROR",
-      [limitsHint],
-    );
-  }
-
-  const parts: string[] = [];
-  if (has("OVER_CAP") && price !== null) {
-    parts.push(
-      `offer ${offerId} costs ${usd(price)}, above the ${usd(config.maxDph)} per-instance cap`,
-    );
-  }
-  if (has("OVER_BURN") && price !== null && burn.burn !== null) {
-    parts.push(
-      `current burn ${usd(burn.burn)} + ${usd(price)} = ${usd(burn.burn + price)} would exceed the ${usd(config.maxBurn)} burn ceiling`,
-    );
-  }
-  const overBalance =
-    has("OVER_BALANCE") &&
-    price !== null &&
-    burn.burn !== null &&
-    balance.balance !== null &&
-    hours !== undefined;
-  if (overBalance) {
-    parts.push(
-      `${hours} h x (burn ${usd(burn.burn!)} + offer ${usd(price)}) = $${money((burn.burn! + price) * hours, 2)}, above the $${money(balance.balance!, 2)} balance`,
-    );
-  }
-  const contractShort =
-    has("CONTRACT_SHORT") && timer !== undefined && timer.leftSec !== null;
-  if (contractShort) {
-    parts.push(
-      `offer ${offerId}'s rental contract has ${round(timer.leftSec! / 3600, 1)} h left, but --max-hours ${timer.maxHours} destroys at ${isoMinute(timer.plan.destroyAt)} (${timer.plan.runsForH} h from now); vast.ai stops the instance when the contract ends`,
-    );
-  }
-  const suggestions = [
-    `Rerun with --confirm to rent anyway: vast-axi rent ${offerId} ... --confirm`,
-  ];
-  if (contractShort) {
-    suggestions.push(
-      "Lower --max-hours, or pick an offer with a longer contract: `vast-axi search --hours <n>` hides offers whose contract ends sooner",
-    );
-  }
-  if (overBalance) {
-    suggestions.push(
-      "Lower --hours, or stop instances you no longer need (`vast-axi status`)",
-      "Or add credit to the vast.ai account",
-    );
-  }
-  if (has("OVER_CAP") || has("OVER_BURN")) {
-    suggestions.push(
-      "Or pick a cheaper offer: `vast-axi search --max-dph " +
-        `${config.maxDph}\``,
-      limitsHint,
-    );
-  }
-  return new AxiError(
-    `Spend guard refused: ${parts.join("; ")}`,
-    "VALIDATION_ERROR",
-    suggestions,
-  );
 }
 
 /** Best-effort balance for INSUFFICIENT_CREDIT (E14); the original error stands if the lookup fails. */
@@ -388,6 +264,13 @@ export const command: VastCommand = async (args) => {
       `Unexpected argument ${extra.map((a) => `"${a}"`).join(", ")}; rent takes one <offer-id>`,
       "VALIDATION_ERROR",
       [USAGE],
+    );
+  }
+  if (image !== undefined && template !== undefined) {
+    throw new AxiError(
+      "rent takes --image or --template, not both",
+      "VALIDATION_ERROR",
+      [USAGE, "Use --template alone when the template sets the image"],
     );
   }
   if (image === undefined && template === undefined) {
@@ -490,7 +373,7 @@ export const command: VastCommand = async (args) => {
       `Run \`vast-axi destroy ${created.instance_id}\` when done (billing continues until then)`,
       ...(timer
         ? [
-            `\`vast-axi destroy ${created.instance_id}\` earlier also removes the timer`,
+            `\`vast-axi timer ${created.instance_id} --max-hours <n>\` moves the destroy time; \`vast-axi destroy ${created.instance_id}\` earlier also removes the timer`,
           ]
         : []),
       ...(ost ? ost.help : []),

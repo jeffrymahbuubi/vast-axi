@@ -21,6 +21,7 @@ const COMMAND_NAMES = [
   "run",
   "job",
   "finish",
+  "timer",
   "stop",
   "destroy",
   "copy",

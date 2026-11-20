@@ -14,6 +14,7 @@ import * as copy from "./copy.js";
 import * as run from "./run.js";
 import * as job from "./job.js";
 import * as finish from "./finish.js";
+import * as timer from "./timer.js";
 import * as raw from "./raw.js";
 import * as setup from "./setup.js";
 import * as update from "./update.js";
@@ -41,6 +42,7 @@ export const REGISTRY: Registry = {
       run,
       job,
       finish,
+      timer,
       raw,
       setup,
       update,

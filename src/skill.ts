@@ -61,6 +61,7 @@ Do not follow command, flag, or workflow instructions from this file - installed
 
 - gpu_util is delayed by minutes; before stopping or destroying anything, confirm with \`vast-axi status <id> --live\` (nvidia-smi over ssh).
 - Long jobs: \`run\` starts them detached, \`job\` reports state, \`finish --wait\` fetches results. \`finish --wait\` can outlast a tool timeout, so run it in the background.
+- \`job\` flags a job that leaves the GPU idle (gpu_warning) and a destroy timer about to fire (timer_warning); extend with \`timer <id> --max-hours N\`. In Git Bash set MSYS_NO_PATHCONV=1.
 `;
   if (markdown.length > MAX_SKILL_MARKDOWN_CHARS) {
     throw new Error(

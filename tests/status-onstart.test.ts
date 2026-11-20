@@ -225,16 +225,18 @@ describe("status --wait with a vast-axi onstart", () => {
 
 describe("status --wait without a vast-axi onstart", () => {
   it.each([["None"], [null], ["env | sort"]])(
-    "onstart %j: returns when running with exactly the old behaviour and no ssh",
+    "onstart %j: no onstart line; the only ssh call is the ssh-ready check",
     async (onstart) => {
-      const r = await status(["5001", "--wait"], {
-        ...FAST,
-        ...rows(inst({ onstart })),
-      });
+      const r = await status(
+        ["5001", "--wait"],
+        { ...FAST, ...rows(inst({ onstart })) },
+        [""],
+      );
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain("class: running");
       expect(r.stdout).not.toContain("onstart");
-      expect(r.ssh).toHaveLength(0);
+      expect(r.stdout).toContain("ssh: ready");
+      expect(r.ssh).toHaveLength(1);
     },
   );
 });

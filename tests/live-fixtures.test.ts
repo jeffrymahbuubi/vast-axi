@@ -24,6 +24,7 @@ import { instanceBurnPerHr } from "../src/burn.js";
 import { resolveEndpoint, type InstanceInfo } from "../src/endpoint.js";
 import { classifyInstance, instanceAgeHours } from "../src/instance-state.js";
 import { runCli } from "./helpers/run-cli.js";
+import { sshOkRegistry } from "./helpers/status-ssh-ok.js";
 import synthesized from "./fixtures/instances.json" with { type: "json" };
 
 const LIST = "live-show-instances-running.json";
@@ -235,9 +236,11 @@ describe("A1: commands on the live shape", () => {
   it("status <id> --wait returns at once for the running live row", async () => {
     const { stdout, exitCode } = await runCli(["status", "4000001", "--wait"], {
       env: routes([live]),
+      registry: sshOkRegistry,
     });
     expect(exitCode).toBe(0);
     expect(stdout).toContain("class: running");
+    expect(stdout).toContain("ssh: ready");
   });
 
   it("ssh resolves the direct endpoint from a bare `show instance` object", async () => {

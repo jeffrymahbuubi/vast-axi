@@ -28,7 +28,9 @@ import {
   type ProbeResult,
   type Selector,
 } from "../job.js";
+import { gpuFields, gpuWarningHelp } from "../job-gpu.js";
 import { ONSTART_JOB } from "../onstart.js";
+import { timerNote, type TimerNote } from "../timer-note.js";
 import { emptyState } from "../toon.js";
 import {
   requireTool,
@@ -68,6 +70,8 @@ export const help = buildHelp({
 export interface JobDeps {
   spawn?: ToolSpawner;
   resolveTool?: (name: "ssh") => string;
+  /** Test seam for the destroy-timer lookup. */
+  timerNote?: (id: number) => Promise<TimerNote>;
 }
 
 /** `--name` / `--log` to a probe selector; they exclude each other. */
@@ -153,6 +157,7 @@ export function describeJob(
   tailLines: number,
 ): Record<string, unknown> {
   const status = jobStatus(rec);
+  const gpu = gpuFields(rec, status, { warn: rec.name !== ONSTART_JOB });
   const tail = cleanTail(rec, tailLines);
   const log = rec.hasLog
     ? `${rec.log ?? "?"} (${byteSize(rec.size ?? 0)})`
@@ -164,6 +169,8 @@ export function describeJob(
     ...(rec.start ? { started: rec.start } : {}),
     ...(status.ended ? { ended: status.ended } : {}),
     ...(status.elapsed ? { elapsed: status.elapsed } : {}),
+    ...(rec.now ? { as_of: rec.now } : {}),
+    ...(gpu?.fields ?? {}),
     log,
     ...(rec.cwd ? { cwd: rec.cwd } : {}),
     ...(rec.cmd ? { cmd: redactSecrets(truncate(rec.cmd, 400)) } : {}),
@@ -204,11 +211,13 @@ export function stateHelp(id: number, rec: JobRecord): string[] {
   if (rec.name === ONSTART_JOB) return onstartHelp(id, rec);
   const n = rec.name === DEFAULT_NAME ? "" : ` --name ${rec.name}`;
   const finish = `vast-axi finish ${id}${n} --wait --fetch <remote>:<local> --destroy`;
-  switch (jobStatus(rec).state) {
+  const status = jobStatus(rec);
+  switch (status.state) {
     case "running":
       return [
         `Check again with \`vast-axi job ${id}${n}\``,
         `Block until it ends, fetch results and destroy with \`${finish}\``,
+        ...(gpuFields(rec, status)?.warned ? [gpuWarningHelp(id)] : []),
       ];
     case "finished":
       return [`Fetch results and tear down with \`${finish}\``];
@@ -255,13 +264,14 @@ export function createJobCommand(deps: JobDeps = {}): VastCommand {
     const id = parseInstanceId(takePositional(args, "id", `usage: ${USAGE}`));
     assertNoExtra(args, USAGE);
 
+    // N5: a missing ssh tool is reported before any upstream call.
+    (deps.resolveTool ?? requireTool)("ssh");
     const endpoint = await requireEndpoint(id);
-    const result = await runProbe(
-      deps,
-      id,
-      endpoint,
-      buildProbeScript(sel, list ? 0 : tail),
-    );
+    const lookup = deps.timerNote ?? timerNote;
+    const [result, note] = await Promise.all([
+      runProbe(deps, id, endpoint, buildProbeScript(sel, list ? 0 : tail)),
+      list ? Promise.resolve(undefined) : lookup(id),
+    ]);
 
     if (list) {
       if (result.kind !== "jobs") {
@@ -285,7 +295,11 @@ export function createJobCommand(deps: JobDeps = {}): VastCommand {
     }
 
     const rec = pickJob(result, id, sel);
-    return { ...describeJob(id, rec, tail), help: stateHelp(id, rec) };
+    return {
+      ...describeJob(id, rec, tail),
+      ...(note?.fields ?? {}),
+      help: [...stateHelp(id, rec), ...(note?.help ?? [])],
+    };
   };
 }
 

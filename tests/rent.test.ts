@@ -63,6 +63,14 @@ describe("flags and arguments (no money moves)", () => {
     expect(r.calls).toHaveLength(0);
   });
 
+  it("E155: --image together with --template exits 2 and runs nothing", async () => {
+    const r = await rent(["5001", ...IMG, "--template", "abc123"]);
+    expect(r.exitCode).toBe(2);
+    expect(r.stdout).toContain("VALIDATION_ERROR");
+    expect(r.stdout).toContain("--image or --template, not both");
+    expect(r.calls).toHaveLength(0);
+  });
+
   it.each([["abc"], ["-5"], ["1.5"], ["0"]])(
     "exits 2 for the offer id %s and runs nothing",
     async (id) => {

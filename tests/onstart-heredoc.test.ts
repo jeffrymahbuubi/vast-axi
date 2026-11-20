@@ -1,6 +1,5 @@
 // The heredoc payload under a REAL local bash: setup.sh and run.sh must land on
 // disk byte for byte, whatever the script holds. Skipped when no bash exists.
-import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -19,7 +18,7 @@ import {
   onstartJobCommand,
 } from "../src/onstart.js";
 import { prepareOnstart } from "../src/rent-onstart.js";
-import { WIN, bashPath, findBash } from "./helpers/bash.js";
+import { WIN, bashPath, findBash, runBash } from "./helpers/bash.js";
 
 const bash = findBash();
 const suite = bash ? describe : describe.skip;
@@ -52,8 +51,7 @@ suite("E90: the heredoc payload round trip under real bash", () => {
     e["HOME"] = home;
     return e;
   };
-  const sh = (code: string) =>
-    spawnSync(bash!, ["-c", code], { encoding: "utf8", env: env() });
+  const sh = (code: string) => runBash(bash!, ["-c", code], { env: env() });
   const fresh = () => {
     home = mkdtempSync(join(tmpdir(), `vaxi-heredoc-home${++n}-`));
   };
@@ -67,7 +65,7 @@ suite("E90: the heredoc payload round trip under real bash", () => {
   }
 
   /** Boot the launcher for `script`, then compare setup.sh and run.sh with the input bytes. */
-  function roundTrip(script: string, pip?: string[]): void {
+  async function roundTrip(script: string, pip?: string[]): Promise<void> {
     fresh();
     const spec = {
       script,
@@ -76,12 +74,10 @@ suite("E90: the heredoc payload round trip under real bash", () => {
       ...(pip ? { pip } : {}),
     };
     expect(
-      spawnSync(bash!, ["-n"], {
-        input: buildOnstartLauncher(spec),
-        encoding: "utf8",
-      }).status,
+      (await runBash(bash!, ["-n"], { input: buildOnstartLauncher(spec) }))
+        .status,
     ).toBe(0);
-    const r = sh(buildOnstartText(spec));
+    const r = await sh(buildOnstartText(spec));
     expect(r.status).toBe(0);
     expect(r.stderr).toBe("");
     const written = readFileSync(jobPath("setup.sh"));
@@ -115,28 +111,31 @@ suite("E90: the heredoc payload round trip under real bash", () => {
 
   // Git Bash (MSYS) drops a bare CR from heredoc text; Linux bash, where the
   // onstart runs, keeps it. CRLF pairs are converted to LF before this point.
-  (WIN ? it.skip : it)("a bare CR inside a line survives (Linux bash)", () => {
-    roundTrip(`${INERT}lone cr\rhere\n`);
+  (WIN ? it.skip : it)(
+    "a bare CR inside a line survives (Linux bash)",
+    async () => {
+      await roundTrip(`${INERT}lone cr\rhere\n`);
+    },
+  );
+
+  it("keeps quotes, expansions, backslashes, whitespace, EOF lines and unicode byte for byte", async () => {
+    await roundTrip(`${INERT}${nasty.join("\n")}\n`);
   });
 
-  it("keeps quotes, expansions, backslashes, whitespace, EOF lines and unicode byte for byte", () => {
-    roundTrip(`${INERT}${nasty.join("\n")}\n`);
+  it("E90: no trailing newline is preserved exactly", async () => {
+    await roundTrip(`${INERT}echo end`);
+    await roundTrip("exit 0");
+    await roundTrip(`${INERT}echo backslash-last\\`);
+    await roundTrip(`${INERT}${nasty.join("\n")}`);
   });
 
-  it("E90: no trailing newline is preserved exactly", () => {
-    roundTrip(`${INERT}echo end`);
-    roundTrip("exit 0");
-    roundTrip(`${INERT}echo backslash-last\\`);
-    roundTrip(`${INERT}${nasty.join("\n")}`);
+  it("E90: trailing and leading blank lines survive", async () => {
+    await roundTrip(`${INERT}echo x\n\n\n`);
+    await roundTrip(`\n\n${INERT}echo x\n`);
+    await roundTrip(`${INERT}echo x\n\n`);
   });
 
-  it("E90: trailing and leading blank lines survive", () => {
-    roundTrip(`${INERT}echo x\n\n\n`);
-    roundTrip(`\n\n${INERT}echo x\n`);
-    roundTrip(`${INERT}echo x\n\n`);
-  });
-
-  it("E90: a line equal to the first-choice delimiter moves the launcher to the next one", () => {
+  it("E90: a line equal to the first-choice delimiter moves the launcher to the next one", async () => {
     for (const script of [
       `${INERT}${FIRST}\necho after\n`,
       `${INERT}echo before\n${FIRST}`,
@@ -145,26 +144,26 @@ suite("E90: the heredoc payload round trip under real bash", () => {
       expect(buildOnstartLauncher({ script, token: TOKEN })).not.toContain(
         `<<'${FIRST}'`,
       );
-      roundTrip(script);
+      await roundTrip(script);
     }
   });
 
-  it("E90: a 2.5 KB script of varied lines round-trips", () => {
+  it("E90: a 2.5 KB script of varied lines round-trips", async () => {
     const lines = Array.from(
       { length: 50 },
       (_, i) => `echo "step ${i}: $HOME 'q' \\\`x\\\` é"; # ${"y".repeat(20)}`,
     );
     const script = `${INERT}${lines.join("\n")}\n`;
     expect(script.length).toBeGreaterThan(2500);
-    roundTrip(script);
-    roundTrip(script.slice(0, -1));
+    await roundTrip(script);
+    await roundTrip(script.slice(0, -1));
   });
 
-  it("E90: with --pip the script still arrives intact", () => {
-    roundTrip(`${INERT}echo "$HOME"\n`, ["numpy", "pandas>=2"]);
+  it("E90: with --pip the script still arrives intact", async () => {
+    await roundTrip(`${INERT}echo "$HOME"\n`, ["numpy", "pandas>=2"]);
   });
 
-  it("E90: CRLF input is converted to LF by rent and the converted bytes land on disk", () => {
+  it("E90: CRLF input is converted to LF by rent and the converted bytes land on disk", async () => {
     fresh();
     const file = join(home, "in.sh");
     writeFileSync(file, "echo one\r\necho two\r\necho three");
@@ -177,21 +176,19 @@ suite("E90: the heredoc payload round trip under real bash", () => {
       token: TOKEN,
       home: bashPath(home),
     });
-    expect(sh(text).status).toBe(0);
+    expect((await sh(text)).status).toBe(0);
     expect(readFileSync(jobPath("setup.sh"), "utf8")).toBe(lf);
     expect(plan!.text).not.toContain("\r");
   });
 
-  it("E90: the whole text is one line and passes `bash -n`", () => {
+  it("E90: the whole text is one line and passes `bash -n`", async () => {
     const text = buildOnstartText({
       script: `${INERT}${nasty.join("\n")}`,
       pip: ["numpy"],
       token: TOKEN,
     });
     expect(text).not.toMatch(/[\r\n]/);
-    expect(
-      spawnSync(bash!, ["-n"], { input: text, encoding: "utf8" }).status,
-    ).toBe(0);
+    expect((await runBash(bash!, ["-n"], { input: text })).status).toBe(0);
   });
 
   it("E92: restarting with a newline-less script yields one fresh record and the same bytes", async () => {
@@ -202,11 +199,11 @@ suite("E90: the heredoc payload round trip under real bash", () => {
       token: TOKEN,
       home: bashPath(home),
     });
-    expect(sh(text).status).toBe(0);
+    expect((await sh(text)).status).toBe(0);
     await untilExit();
     expect(readFileSync(jobPath("onstart.log"), "utf8")).toContain("done");
     // Same stored text runs again on container restart.
-    expect(sh(text).status).toBe(0);
+    expect((await sh(text)).status).toBe(0);
     await untilExit();
     expect(readFileSync(jobPath("setup.sh"), "utf8")).toBe(script);
     expect(readFileSync(join(home, "boots"), "utf8")).toBe("x\nx\n");

@@ -65,6 +65,35 @@ describe("finish --wait heartbeat", () => {
     expect(err.lines()).toBe("");
   });
 
+  it("E161: a GPU sample adds `, gpu N%` and an idle warning is its own stderr line", async () => {
+    const err = spyStderr();
+    const busy = ok(
+      record({
+        alive: true,
+        start: "2026-10-20T10:00:00Z",
+        now: "2026-10-20T10:20:00Z",
+        gpu: "87, 20000;",
+      }),
+    );
+    const idle = ok(
+      record({
+        alive: true,
+        start: "2026-10-20T10:00:00Z",
+        now: "2026-10-20T10:35:00Z",
+        gpu: "0, 165;",
+      }),
+    );
+    const w = build({ probes: [busy, idle, finished()] });
+    await runCli(["finish", "42", "--wait", "--poll", "30s"], {
+      registry: w.registry,
+    });
+    const lines = err.lines().trimEnd().split("\n");
+    expect(lines[0]).toBe("finish 42: running, elapsed 20m, gpu 87% (10:20Z)");
+    expect(lines[1]).toBe("finish 42: running, elapsed 35m, gpu 0% (10:35Z)");
+    expect(lines[2]).toMatch(/^finish 42: GPU idle: every GPU is under /);
+    expect(lines).toHaveLength(3);
+  });
+
   it("E98: a transient ssh failure while waiting writes a retry line", async () => {
     const err = spyStderr();
     const w = build({ probes: [sshDown, finished()] });

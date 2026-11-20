@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { REGISTRY, type Registry } from "../src/commands/index.js";
-import { createStatusCommand, help } from "../src/commands/status.js";
+import {
+  createStatusCommand,
+  help,
+  type WaitClock,
+} from "../src/commands/status.js";
 import { buildOnstartText } from "../src/onstart.js";
 import type { ToolRun } from "../src/transfer.js";
 import { ok, record, recordingSpawner } from "./helpers/job-records.js";
@@ -73,6 +77,7 @@ async function status(
   args: string[],
   env: Env,
   replies: Array<string | ToolRun>,
+  clock?: WaitClock,
 ) {
   const { spawn, calls } = recordingSpawner((_c, i) => {
     const r = replies[Math.min(i, replies.length - 1)]!;
@@ -83,7 +88,11 @@ async function status(
     commands: {
       ...REGISTRY.commands,
       status: {
-        command: createStatusCommand({ spawn, resolveTool: () => "ssh" }),
+        command: createStatusCommand({
+          spawn,
+          resolveTool: () => "ssh",
+          ...(clock ? { clock } : {}),
+        }),
         help,
       },
     },
@@ -106,6 +115,19 @@ const verbs = (r: { vast: Array<{ tokens: string[] }> }) =>
   r.vast.map((c) => c.tokens[0]);
 const FAST: Env = { VAST_AXI_POLL_MS: "10", VAST_AXI_WAIT_MS: "300" };
 const LONG: Env = { VAST_AXI_POLL_MS: "10", VAST_AXI_WAIT_MS: "60000" };
+
+/** Injected clock: sleep advances time at once, so no test depends on real time. */
+function fakeClock(intervalMs: number, deadlineMs: number): WaitClock {
+  let t = 0;
+  return {
+    now: () => t,
+    sleep: async (ms) => {
+      t += ms;
+    },
+    intervalMs,
+    deadlineMs,
+  };
+}
 
 describe("status --wait: image without ssh", () => {
   it("E87: stops with IMAGE_NO_SSH when the container log shows the launcher's ssh-not-found loop", async () => {
@@ -173,17 +195,17 @@ describe("status --wait: image without ssh", () => {
   it("E88: a failing log fetch keeps the old retry and deadline behaviour", async () => {
     const r = await status(
       ["5001", "--wait"],
-      { ...FAST, ...routes(inst(), { stderr: "boom\n", exit: 1 }) },
+      routes(inst(), { stderr: "boom\n", exit: 1 }),
       [SSH_DOWN],
+      fakeClock(10, 300),
     );
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toContain("onstart: unknown (deadline)");
     expect(r.stdout).not.toContain("IMAGE_NO_SSH");
-    expect(r.ssh.length).toBeGreaterThan(2);
-    // Never more than one log fetch per poll.
-    expect(verbs(r).filter((x) => x === "logs").length).toBeLessThan(
-      r.ssh.length,
-    );
+    // 300 ms window at a 10 ms interval on the injected clock: 31 polls, and
+    // the log is read once per poll from the second failure on.
+    expect(r.ssh).toHaveLength(31);
+    expect(verbs(r).filter((x) => x === "logs")).toHaveLength(30);
   });
 
   it("E88: a log fetch failure does not stop a later recovery", async () => {
@@ -209,16 +231,17 @@ describe("status --wait: image without ssh", () => {
   });
 
   it.each([["None"], [null], ["env | sort"]])(
-    "no onstart marker (%j): --wait makes no ssh and no logs call",
+    "no onstart marker (%j): --wait checks ssh once and makes no logs call",
     async (onstart) => {
       const r = await status(
         ["5001", "--wait"],
         { ...FAST, ...routes(inst({ onstart }), { stdout: LAUNCH_LOOP }) },
-        [SSH_DOWN],
+        [""],
       );
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain("class: running");
-      expect(r.ssh).toHaveLength(0);
+      expect(r.stdout).toContain("ssh: ready");
+      expect(r.ssh).toHaveLength(1);
       expect(verbs(r)).not.toContain("logs");
     },
   );

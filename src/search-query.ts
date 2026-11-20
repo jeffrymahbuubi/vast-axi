@@ -16,6 +16,10 @@ export interface SearchFilters {
    * raw query sets `duration` itself.
    */
   minHours?: number;
+  /** Minimum NVIDIA driver, already normalised to X.X.X (`--min-driver`). */
+  minDriver?: string;
+  /** Minimum CUDA version the host supports (`--min-cuda`). */
+  minCuda?: string;
 }
 
 /** Safe defaults (R7): only offers that can be rented now, on verified hosts. */
@@ -84,6 +88,83 @@ export function buildQuery(filters: SearchFilters): string {
   for (const [field, term] of DEFAULT_TERMS) {
     if (!constrains(raw, field)) terms.push(term);
   }
+  if (filters.minDriver !== undefined) {
+    terms.push(`driver_version>=${filters.minDriver}`);
+  }
+  if (filters.minCuda !== undefined) {
+    terms.push(`cuda_max_good>=${filters.minCuda}`);
+  }
   if (raw) terms.push(raw);
   return terms.join(" ");
+}
+
+/** `--min-driver 555` / `535.86` / `535.86.05` -> `555.0.0` / `535.86.0` / `535.86.05` (vastai needs X.X.X). */
+export function normalizeDriver(value: string): string {
+  const v = value.trim();
+  if (!/^\d{1,3}(\.\d{1,3}){0,2}$/.test(v)) {
+    throw new AxiError(
+      `--min-driver must be 1 to 3 dot-separated numbers of up to 3 digits, such as 555 or 535.86.05, got "${value}"`,
+      "VALIDATION_ERROR",
+      ["Example: --min-driver 555 (the query gets driver_version>=555.0.0)"],
+    );
+  }
+  const parts = v.split(".");
+  while (parts.length < 3) parts.push("0");
+  return parts.join(".");
+}
+
+/** Validate `--min-cuda` (`12` or `12.5`). */
+export function normalizeCuda(value: string): string {
+  const v = value.trim();
+  if (!/^\d+(\.\d+)?$/.test(v)) {
+    throw new AxiError(
+      `--min-cuda must be a number such as 12.5, got "${value}"`,
+      "VALIDATION_ERROR",
+      ["Example: --min-cuda 12.5 (the query gets cuda_max_good>=12.5)"],
+    );
+  }
+  return v;
+}
+
+/** Does the raw query mention `field` with an operator? */
+export function mentions(query: string | undefined, field: string): boolean {
+  return constrains(query ?? "", field);
+}
+
+/** Does the raw query constrain the CUDA version (`cuda_max_good` or `cuda_vers`)? */
+export function mentionsCuda(query: string | undefined): boolean {
+  return mentions(query, "cuda_max_good") || mentions(query, "cuda_vers");
+}
+
+const DRIVER_TERM = /(^|\s)driver_version\s*(>=|<=|!=|=|<|>)\s*(\S+)/g;
+
+/**
+ * Refuse a raw `driver_version` term vastai would mangle (V8): a value with a
+ * dot needs three parts, and one without a dot is an upstream HTTP 400.
+ */
+export function checkDriverQuery(query: string | undefined): void {
+  for (const m of (query ?? "").matchAll(DRIVER_TERM)) {
+    const value = (m[3] ?? "").replace(/^['"]|['"]$/g, "");
+    if (!/^\d+\.\d+\.\d+$/.test(value)) {
+      throw new AxiError(
+        `driver_version needs X.X.X, for example driver_version>=555.0.0; or use --min-driver 555 (got "${m[2]}${value}")`,
+        "VALIDATION_ERROR",
+        [
+          "Use --min-driver 555 instead of a raw driver_version term",
+          "Or write the value with three parts: --query 'driver_version>=555.0.0'",
+        ],
+      );
+    }
+  }
+}
+
+/** The error line vastai prints on stdout for a query it cannot parse, or undefined. */
+export function upstreamQueryError(output: string): string | undefined {
+  const known =
+    /Did you forget to quote your query|Unconsumed text|Unknown operator|Invalid version string/;
+  const line = output
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => known.test(l));
+  return line?.replace(/^Error:\s*/, "");
 }

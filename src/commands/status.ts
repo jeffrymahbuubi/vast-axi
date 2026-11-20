@@ -22,16 +22,12 @@ import {
   type InstanceState,
   type StateInstance,
 } from "../instance-state.js";
-import { NVIDIA_SMI_ARGS, parseNvidiaSmi } from "../live-gpu.js";
 import { ONSTART_JOB, hasOnstartMarker } from "../onstart.js";
+import { waitForSsh } from "../ssh-ready.js";
+import { liveStatus } from "../status-live.js";
 import { waitForOnstart } from "../status-onstart.js";
 import { emptyState } from "../toon.js";
-import {
-  requireTool,
-  runSsh,
-  spawnTool,
-  type ToolSpawner,
-} from "../transfer.js";
+import type { ToolSpawner } from "../transfer.js";
 import { vastJson } from "../vastai.js";
 import type { VastCommand, VastOutput } from "./types.js";
 
@@ -87,7 +83,7 @@ export const help = buildHelp({
   summary:
     "List your instances, or show one. Each gets a class: booting, running, stopped or terminal.",
   flags: [
-    "--wait  poll every 15s until running (exit 0); exits 1 at once on stopped/terminal, or after 10 min; if the instance has a vast-axi onstart job (`rent --onstart/--pip`), then waits up to 10 more min for it",
+    "--wait  poll every 15s until running (exit 0); exits 1 at once on stopped/terminal, or after 10 min; then waits up to 3 more min for ssh to answer (`ssh: ready`, or exit 1 `ssh: not ready`); if the instance has a vast-axi onstart job (`rent --onstart/--pip`), it waits up to 10 more min for that job instead",
     "--live  read real GPU use with nvidia-smi over ssh (running instance only; not with --wait)",
   ],
   notes: [
@@ -188,65 +184,8 @@ function detail(
 export interface StatusDeps {
   spawn?: ToolSpawner;
   resolveTool?: (name: "ssh") => string;
-}
-
-/** `--live`: ask the GPUs themselves. Never falls back to the delayed upstream value. */
-async function liveStatus(
-  inst: StatusInstance,
-  state: InstanceState,
-  deps: StatusDeps,
-): Promise<Record<string, unknown>> {
-  const id = inst.id;
-  if (state.class !== "running") {
-    throw new AxiError(
-      `--live needs a running instance; #${id} is ${state.class}`,
-      "VALIDATION_ERROR",
-      nextSteps(id, state),
-    );
-  }
-  const endpoint = resolveEndpoint(inst);
-  if (!endpoint) {
-    throw new AxiError(
-      `Instance #${id} has no ssh endpoint yet`,
-      "NOT_RUNNING",
-      [`Run \`vast-axi status ${id}\` again in a minute`],
-    );
-  }
-  const { run } = await runSsh(
-    deps.spawn ?? spawnTool,
-    (deps.resolveTool ?? requireTool)("ssh"),
-    id,
-    endpoint,
-    NVIDIA_SMI_ARGS,
-  );
-  if (run.exitCode !== 0) {
-    throw new AxiError(
-      `nvidia-smi failed on #${id} (exit ${run.exitCode}): ${truncate(run.stderr.trim(), 300) || "no output"}`,
-      "SSH_FAILED",
-      [
-        "The image may have no NVIDIA driver tools; the delayed gpu_util is not a substitute",
-        `Run \`vast-axi ssh ${id} --exec -- nvidia-smi\` to see the raw error`,
-      ],
-    );
-  }
-  const live = parseNvidiaSmi(id, run.stdout);
-  return {
-    id,
-    class: state.class,
-    gpu_util_source: "nvidia-smi over ssh (live)",
-    gpus: live.gpus,
-    gpu_util_live: live.gpu_util_live,
-    power_w: live.power_w,
-    mem_used_mib: live.mem_used_mib,
-    idle_live: live.idle_live,
-    help:
-      live.idle_live === "yes"
-        ? [
-            `Every GPU is under 5% right now; if no job should be running, run \`vast-axi stop ${id}\``,
-            "A job between steps can read 0 briefly; run --live again to be sure",
-          ]
-        : ["GPUs are busy; leave the instance running"],
-  };
+  /** Test seam: the time source for `--wait`; default is the real clock. */
+  clock?: WaitClock;
 }
 
 async function fetchInstances(): Promise<StatusInstance[]> {
@@ -380,13 +319,17 @@ async function runStatus(
     };
   }
 
-  const inst = wait
-    ? await waitForRunning(id, realClock())
-    : await fetchOne(id);
+  const clock = deps.clock ?? realClock();
+  const inst = wait ? await waitForRunning(id, clock) : await fetchOne(id);
   const hasOnstart = hasOnstartMarker(inst.onstart);
   const onstart =
     wait && hasOnstart
-      ? await waitForOnstart(id, inst, realClock(), deps, fetchOne)
+      ? await waitForOnstart(id, inst, clock, deps, fetchOne)
+      : undefined;
+  // The onstart wait already proves ssh; otherwise --wait checks it (B7).
+  const sshWait =
+    wait && !hasOnstart
+      ? await waitForSsh(id, inst, clock, deps, fetchOne)
       : undefined;
   const now = Date.now();
   const state = classifyInstance(inst, now);
@@ -397,6 +340,24 @@ async function runStatus(
   const jobs = await tryListScheduledJobs();
   const timer = jobs ? timerSummaryFor(jobs, id, nowSec()) : undefined;
   const out = detail(inst, state, now, idle, timer);
+  if (sshWait) {
+    if (sshWait.failed) process.exitCode = 1;
+    return {
+      ...out,
+      ssh: sshWait.line,
+      ...(sshWait.failed
+        ? {
+            help: [
+              `Run \`vast-axi status ${id} --wait\` again`,
+              `\`vast-axi logs ${id}\` shows the container log`,
+              ...(out["help"] as string[]).filter(
+                (h) => !h.includes(`vast-axi ssh ${id}`),
+              ),
+            ],
+          }
+        : {}),
+    };
+  }
   if (!hasOnstart) return out;
   if (onstart?.failed) process.exitCode = 1;
   return {

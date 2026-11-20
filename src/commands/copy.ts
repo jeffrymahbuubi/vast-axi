@@ -1,8 +1,17 @@
+import { existsSync } from "node:fs";
+import { posix } from "node:path";
 import { assertKnownFlags, takeBoolFlag, takePositional } from "../args.js";
 import { assertNoExtra, requireEndpoint } from "../endpoint.js";
-import { AxiError, mapVastError, redactSecrets } from "../errors.js";
+import {
+  AxiError,
+  mapVastError,
+  REMOTE_PATH_MISSING,
+  redactSecrets,
+} from "../errors.js";
 import { truncate } from "../format.js";
 import { buildHelp } from "../help.js";
+import { shellQuote } from "../job.js";
+import { classifySshFailure, failureHints } from "../ssh-failure.js";
 import {
   formatFindings,
   MAX_ENTRIES,
@@ -15,6 +24,7 @@ import {
   parseLocation,
   renderCommand,
   requireTool,
+  runSsh,
   spawnTool,
   type ToolSpawner,
 } from "../transfer.js";
@@ -29,7 +39,8 @@ export const help = buildHelp({
     "Copy files between this machine and an instance (scp), or between instances (vastai copy).",
   notes: [
     "Locations: local:<path> or a plain path, C.<id>:<path>. Cloud locators (s3.101:, drive:) and instance-to-instance copies go to `vastai copy` unchanged.",
-    "Local copies need the OpenSSH `scp` on PATH; rsync is never used.",
+    "Local copies need the OpenSSH `scp` (and, for uploads, `ssh`) on PATH; rsync is never used.",
+    "Uploads create the destination's parent directory first (ssh `mkdir -p`; a destination ending in `/` is created itself), so the first copy into a fresh instance works. Not every image has /workspace.",
     "Copying into / or /root is refused: it breaks ssh access to the instance.",
     "Uploads are scanned first and refused (exit 2) if they hold secrets: .env/.env.* (not .env.example), *.pem *.key *.p12 *.pfx, id_rsa/id_ed25519 keys, .ssh/, .aws/credentials, .netrc .npmrc .pypirc .git-credentials, credentials.json kaggle.json, vast_api_key, or text with a token (hf_, sk-, ghp_, AKIA, 64-hex...). Downloads are not scanned.",
   ],
@@ -45,7 +56,24 @@ export const help = buildHelp({
 
 export interface CopyDeps {
   spawn?: ToolSpawner;
-  resolveTool?: (name: "scp") => string;
+  resolveTool?: (name: "ssh" | "scp") => string;
+}
+
+/** The directory an upload needs: the dest itself when it ends in `/`, else its parent. */
+export function mkdirTarget(dest: string): string | undefined {
+  const target = dest.endsWith("/") ? dest : posix.dirname(dest);
+  return ["", ".", "/", "~", "~/"].includes(target) ? undefined : target;
+}
+
+/** `~/x` keeps its tilde unquoted so the remote shell still expands it. */
+function quoteRemote(path: string): string {
+  return path.startsWith("~/")
+    ? `~/${shellQuote(path.slice(2))}`
+    : shellQuote(path);
+}
+
+function parentOf(path: string): string {
+  return posix.dirname(path.replace(/\/+$/, "") || "/");
 }
 
 /** Factory so tests can inject the spawner; real runs use the default below. */
@@ -112,6 +140,13 @@ export function createCopyCommand(deps: CopyDeps = {}): VastCommand {
     // Local scan, before scp or any network call (Phase 3 upload guard).
     const guard: Record<string, unknown> = {};
     if (direction === "up") {
+      if (!existsSync(local.path)) {
+        throw new AxiError(
+          `local source not found: ${local.path}`,
+          "VALIDATION_ERROR",
+          ["Check the path; nothing was uploaded"],
+        );
+      }
       const scan = scanUpload(local.path);
       const skipped = scan.skipped
         ? `${scan.skipped} unreadable entries not scanned`
@@ -154,7 +189,29 @@ export function createCopyCommand(deps: CopyDeps = {}): VastCommand {
     }
 
     const scp = resolveTool("scp");
+    const ssh = direction === "up" ? resolveTool("ssh") : undefined;
     const endpoint = await requireEndpoint(instance.id);
+    if (direction === "up" && ssh) {
+      const target = mkdirTarget(instance.path);
+      if (target) {
+        const made = await runSsh(spawn, ssh, instance.id, endpoint, [
+          `mkdir -p -- ${quoteRemote(target)}`,
+        ]);
+        if (made.run.exitCode !== 0) {
+          const why =
+            redactSecrets(truncate(made.run.stderr.trim(), 300)) ||
+            `mkdir exited with code ${made.run.exitCode}`;
+          throw new AxiError(
+            `could not create ${target} on #${instance.id}: ${why}`,
+            REMOTE_PATH_MISSING,
+            [
+              `List it: \`vast-axi ssh ${instance.id} --exec -- ls -la ${parentOf(target)}\``,
+            ],
+          );
+        }
+        guard["ensured_dir"] = target;
+      }
+    }
     const scpArgs = buildScpArgs(
       direction,
       endpoint,
@@ -166,10 +223,17 @@ export function createCopyCommand(deps: CopyDeps = {}): VastCommand {
       const detail =
         redactSecrets(truncate(run.stderr.trim(), 400)) ||
         `scp exited with code ${run.exitCode}`;
-      throw new AxiError(`scp failed: ${detail}`, "TRANSFER_FAILED", [
-        `Run \`vast-axi status ${instance.id}\` to check the instance is running`,
-        "The account needs an ssh key attached on vast.ai for scp to log in",
-      ]);
+      const kind = classifySshFailure(run.stderr);
+      if (kind === "path") {
+        throw new AxiError(`scp failed: ${detail}`, REMOTE_PATH_MISSING, [
+          `List it: \`vast-axi ssh ${instance.id} --exec -- ls -la ${parentOf(instance.path)}\``,
+        ]);
+      }
+      throw new AxiError(
+        `scp failed: ${detail}`,
+        "TRANSFER_FAILED",
+        failureHints(kind, instance.id, endpoint),
+      );
     }
     return {
       copy: `${src} -> ${dst}`,

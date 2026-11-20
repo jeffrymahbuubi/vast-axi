@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -15,6 +15,18 @@ import {
 } from "../src/transfer.js";
 import { newCallLog, readCallLog, runCli } from "./helpers/run-cli.js";
 
+// Real local sources: an upload to a missing local path is refused (E129).
+const SRC_DIR = mkdtempSync(join(tmpdir(), "vast-axi-copy-src-"));
+const SRC = join(SRC_DIR, "x");
+writeFileSync(SRC, "x");
+const DATA = join(SRC_DIR, "data");
+mkdirSync(DATA);
+const SPACED = join(SRC_DIR, "my data", "file name.txt");
+mkdirSync(join(SRC_DIR, "my data"));
+writeFileSync(SPACED, "x");
+const NOTES = join(SRC_DIR, "notes.txt");
+writeFileSync(NOTES, "x");
+
 interface SpawnCall {
   file: string;
   args: string[];
@@ -26,12 +38,16 @@ function copyRegistry(run: Partial<ToolRun> = {}): {
   registry: Registry;
   spawned: SpawnCall[];
 } {
+  // `spawned` holds the scp starts; the ssh `mkdir -p` calls are not in it.
   const spawned: SpawnCall[] = [];
   const spawn: ToolSpawner = (file, args, opts) => {
+    if (file === "ssh") {
+      return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+    }
     spawned.push({ file, args, capture: opts.capture });
     return Promise.resolve({ exitCode: 0, stdout: "", stderr: "", ...run });
   };
-  const command = copy.createCopyCommand({ spawn, resolveTool: () => "scp" });
+  const command = copy.createCopyCommand({ spawn, resolveTool: (n) => n });
   return {
     spawned,
     registry: {
@@ -52,20 +68,17 @@ const SCP_OPTS = [
 describe("copy local <-> instance (scp)", () => {
   it("uploads: scp -P <port> accept-new -r <local> root@<host>:<path>", async () => {
     const { registry, spawned } = copyRegistry();
-    const out = await runCli(["copy", "local:./data", "C.42:/workspace/data"], {
-      registry,
-    });
+    const out = await runCli(
+      ["copy", `local:${DATA}`, "C.42:/workspace/data"],
+      {
+        registry,
+      },
+    );
     expect(out.exitCode).toBe(0);
     expect(spawned).toEqual([
       {
         file: "scp",
-        args: [
-          "-P",
-          "2222",
-          ...SCP_OPTS,
-          "./data",
-          "root@1.2.3.4:/workspace/data",
-        ],
+        args: ["-P", "2222", ...SCP_OPTS, DATA, "root@1.2.3.4:/workspace/data"],
         capture: true,
       },
     ]);
@@ -88,18 +101,18 @@ describe("copy local <-> instance (scp)", () => {
 
   it("accepts the legacy `<id>:<path>` form and a bare local path", async () => {
     const { registry, spawned } = copyRegistry();
-    await runCli(["copy", "notes.txt", "42:/workspace/notes.txt"], {
+    await runCli(["copy", NOTES, "42:/workspace/notes.txt"], {
       registry,
     });
     expect(spawned[0]!.args.slice(-2)).toEqual([
-      "notes.txt",
+      NOTES,
       "root@1.2.3.4:/workspace/notes.txt",
     ]);
   });
 
   it("A5: a direct instance is reached at public_ipaddr and the mapped port", async () => {
     const { registry, spawned } = copyRegistry();
-    await runCli(["copy", "local:x", "C.42:/workspace/x"], {
+    await runCli(["copy", `local:${SRC}`, "C.42:/workspace/x"], {
       registry,
       env: {
         FAKE_VASTAI_ROUTES: JSON.stringify({
@@ -114,12 +127,12 @@ describe("copy local <-> instance (scp)", () => {
   it("E22: a path with spaces reaches scp as one argument, with no shell involved", async () => {
     const { registry, spawned } = copyRegistry();
     const out = await runCli(
-      ["copy", "local:./my data/file name.txt", "C.42:/workspace/my data/"],
+      ["copy", `local:${SPACED}`, "C.42:/workspace/my data/"],
       { registry },
     );
     expect(out.exitCode).toBe(0);
     expect(spawned[0]!.args.slice(-2)).toEqual([
-      "./my data/file name.txt",
+      SPACED,
       "root@1.2.3.4:/workspace/my data/",
     ]);
   });
@@ -158,19 +171,19 @@ describe("copy local <-> instance (scp)", () => {
   it("a failing scp is TRANSFER_FAILED with scp's message (exit 1)", async () => {
     const { registry } = copyRegistry({
       exitCode: 1,
-      stderr: "scp: /workspace/x: No such file or directory",
+      stderr: "scp: lost connection",
     });
-    const out = await runCli(["copy", "local:x", "C.42:/workspace/x"], {
+    const out = await runCli(["copy", `local:${SRC}`, "C.42:/workspace/x"], {
       registry,
     });
     expect(out.exitCode).toBe(1);
     expect(out.stdout).toContain("code: TRANSFER_FAILED");
-    expect(out.stdout).toContain("No such file or directory");
+    expect(out.stdout).toContain("lost connection");
   });
 
   it("a stopped instance cannot be copied to (NOT_RUNNING), and scp never starts", async () => {
     const { registry, spawned } = copyRegistry();
-    const out = await runCli(["copy", "local:x", "C.42:/workspace/x"], {
+    const out = await runCli(["copy", `local:${SRC}`, "C.42:/workspace/x"], {
       registry,
       env: {
         FAKE_VASTAI_ROUTES: JSON.stringify({
@@ -184,14 +197,14 @@ describe("copy local <-> instance (scp)", () => {
 
   it("never starts rsync", async () => {
     const { registry, spawned } = copyRegistry();
-    await runCli(["copy", "local:x", "C.42:/workspace/x"], { registry });
+    await runCli(["copy", `local:${SRC}`, "C.42:/workspace/x"], { registry });
     await runCli(["copy", "C.42:/a", "C.43:/b"], { registry });
     expect(spawned.every((s) => s.file === "scp")).toBe(true);
   });
 
   it("E23: with scp missing from PATH, copy reports TRANSFER_TOOL_MISSING before any vastai call", async () => {
     const log = newCallLog();
-    const out = await runCli(["copy", "local:x", "C.42:/workspace/x"], {
+    const out = await runCli(["copy", `local:${SRC}`, "C.42:/workspace/x"], {
       env: {
         PATH: mkdtempSync(join(tmpdir(), "vast-axi-nopath-")),
         FAKE_VASTAI_LOG: log,
@@ -219,7 +232,7 @@ describe("copy destinations", () => {
   ])("rejects C.42:%j as a destination and starts nothing", async (path) => {
     const log = newCallLog();
     const { registry, spawned } = copyRegistry();
-    const out = await runCli(["copy", "local:x", `C.42:${path}`], {
+    const out = await runCli(["copy", `local:${SRC}`, `C.42:${path}`], {
       registry,
       env: { FAKE_VASTAI_LOG: log },
     });

@@ -5,14 +5,22 @@
 // scripts are also run under a real local bash in tests/job-bash.test.ts.
 import { randomBytes } from "node:crypto";
 import { posix } from "node:path";
-import { AxiError, redactSecrets } from "./errors.js";
-import { formatDuration, truncate } from "./format.js";
+import { AxiError } from "./errors.js";
+import { formatDuration } from "./format.js";
+import { parseGpuSample } from "./job-gpu.js";
 import { assertSafeDestination } from "./transfer.js";
+
+export {
+  TAIL_LINE_CAP,
+  cleanTail,
+  jobStatus,
+  type JobState,
+  type JobStatus,
+} from "./job-status.js";
 
 export const MARKER = "__VAST_AXI_EXIT__";
 export const DEFAULT_NAME = "main";
 export const DEFAULT_CWD = "/workspace";
-export const TAIL_LINE_CAP = 400;
 /** Windows caps a whole command line at about 32 KB; stay well under it. */
 export const MAX_REMOTE_LINE = 24_000;
 /** Prefix of every line the remote scripts print, so ssh banners are ignored. */
@@ -57,13 +65,16 @@ export function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+const MSYS_HINT =
+  "In Git Bash, run with MSYS_NO_PATHCONV=1 so /workspace/... is not rewritten to a Windows path";
+
 function assertPlain(value: string, what: string): void {
   if (/[\0\r\n]/.test(value)) throw bad(`${what} must be a single line`);
   // Git Bash rewrites `/workspace/x` into `C:/Program Files/Git/workspace/x`
   // before we see it; a drive letter is never a valid instance path.
   if (/^[A-Za-z]:[\\/]/.test(value)) {
     throw bad(`${what} "${value}" is a Windows path, not an instance path`, [
-      "In Git Bash, run with MSYS_NO_PATHCONV=1 so /workspace/... is not rewritten to a Windows path",
+      MSYS_HINT,
     ]);
   }
 }
@@ -105,6 +116,16 @@ export function parseFetchSpec(spec: string): {
   local: string;
 } {
   const i = spec.indexOf(":");
+  // Git Bash rewrote the remote half into a Windows path (V11, F4).
+  if (
+    /^[A-Za-z]:[\\/]/.test(spec) ||
+    (i > 0 && spec.slice(0, i).includes("\\"))
+  ) {
+    throw bad(
+      `--fetch "${spec}" looks like a rewritten Windows path, not <remote>:<local>`,
+      [MSYS_HINT],
+    );
+  }
   if (i <= 0 || i === spec.length - 1) {
     throw bad(`--fetch needs <remote>:<local>, got "${spec}"`, [
       "Example: --fetch out/model.pt:./model.pt or --fetch out/m.pt:C:\\res\\m.pt",
@@ -148,6 +169,11 @@ vaxi_probe_job() {
     echo "${P} nolog"
   fi
   [ -f "$d/exit" ] && echo "${P} exitfile $(cat "$d/exit")"
+  if [ "$n" -gt 0 ] && command -v nvidia-smi >/dev/null 2>&1; then
+    q="--query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits"
+    if command -v timeout >/dev/null 2>&1; then g=$(timeout 10 nvidia-smi $q 2>/dev/null); else g=$(nvidia-smi $q 2>/dev/null); fi
+    [ -n "$g" ] && echo "${P} gpu $(printf '%s\n' "$g" | tr -d '\r' | tr '\n' ';')"
+  fi
   echo "${P} now $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   return 0
 }
@@ -303,6 +329,8 @@ export interface JobRecord {
   exitFile?: { code: number; end: string };
   tailText?: string;
   now?: string;
+  /** One `nvidia-smi` sample taken by the probe (field report #8). */
+  gpu?: { util: number[]; memMib: Array<number | null> };
 }
 
 export type ProbeResult =
@@ -357,6 +385,7 @@ export function parseProbeOutput(stdout: string): ProbeResult {
     else if (key === "nolog") cur.hasLog = false;
     else if (key === "tail") cur.tailText = fromB64(val);
     else if (key === "now") cur.now = val;
+    else if (key === "gpu") cur.gpu = parseGpuSample(val);
     else if (key === "marker") {
       const m = MARKER_RE.exec(val);
       if (m) {
@@ -369,59 +398,4 @@ export function parseProbeOutput(stdout: string): ProbeResult {
     }
   }
   return jobs.length > 0 ? { kind: "jobs", jobs } : { kind: "empty" };
-}
-
-export type JobState = "running" | "finished" | "failed" | "lost";
-
-export interface JobStatus {
-  state: JobState;
-  exitCode?: number;
-  ended?: string;
-  elapsed?: string;
-}
-
-function seconds(from?: string, to?: string): number | undefined {
-  const a = Date.parse(from ?? "");
-  const b = Date.parse(to ?? "");
-  return Number.isNaN(a) || Number.isNaN(b) ? undefined : (b - a) / 1000;
-}
-
-/**
- * Finished means this run's marker is in the log (or, if the log has no
- * marker, the wrapper's `exit` file exists). Otherwise alive means running and
- * not alive means lost (E41); the ssh echo is never consulted.
- */
-export function jobStatus(rec: JobRecord): JobStatus {
-  const done = rec.marker ?? rec.exitFile;
-  if (done) {
-    const secs = seconds(rec.start, done.end);
-    return {
-      state: done.code === 0 ? "finished" : "failed",
-      exitCode: done.code,
-      ended: done.end,
-      ...(secs !== undefined ? { elapsed: formatDuration(secs) } : {}),
-    };
-  }
-  const secs = seconds(rec.start, rec.now);
-  const elapsed = secs !== undefined ? { elapsed: formatDuration(secs) } : {};
-  return { state: rec.alive ? "running" : "lost", ...elapsed };
-}
-
-/**
- * Clean the raw tail for display: drop this run's marker line, collapse tqdm
- * `\r` progress to the last segment (E43), redact secrets (E51), cut each
- * line to 400 characters and keep the last `n` lines.
- */
-export function cleanTail(rec: JobRecord, n: number): string[] {
-  if (n <= 0 || !rec.tailText) return [];
-  const lines = rec.tailText
-    .split("\n")
-    .filter((l) => l.replace(/\r$/, "") !== rec.markerLine)
-    .map((l) => {
-      const segments = l.split("\r").filter((s) => s !== "");
-      return segments[segments.length - 1] ?? "";
-    });
-  while (lines.length > 0 && lines[lines.length - 1]!.trim() === "")
-    lines.pop();
-  return lines.slice(-n).map((l) => truncate(redactSecrets(l), TAIL_LINE_CAP));
 }

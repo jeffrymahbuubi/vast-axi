@@ -2,6 +2,9 @@ import { AxiError, exitCodeForError } from "axi-sdk-js";
 
 export { AxiError, exitCodeForError };
 
+/** Error code (exit 1): a remote path that scp or `mkdir -p` could not reach. */
+export const REMOTE_PATH_MISSING = "REMOTE_PATH_MISSING";
+
 /** An error reported by the vast.ai API, as `vastai --raw` surfaces it. */
 export interface UpstreamError {
   status: number | null;

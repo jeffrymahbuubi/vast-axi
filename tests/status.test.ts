@@ -11,6 +11,7 @@ import {
 } from "../src/commands/status.js";
 import type { ToolRun, ToolSpawner } from "../src/transfer.js";
 import { newCallLog, runCli, upstreamCalls } from "./helpers/calls.js";
+import { sshOkRegistry } from "./helpers/status-ssh-ok.js";
 
 const nowS = () => Date.now() / 1000;
 
@@ -55,7 +56,7 @@ function withSequence(lists: unknown[][]): Record<string, string> {
 
 const states = { U4_FIXTURE: "u4-states.json" };
 const status = (args: string[], env: Record<string, string> = {}) =>
-  runCli(["status", ...args], { env });
+  runCli(["status", ...args], { env, registry: sshOkRegistry });
 
 describe("status list (R9)", () => {
   it("lists instances with actual_status and class, and a next step per class", async () => {

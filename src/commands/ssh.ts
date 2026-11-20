@@ -7,6 +7,8 @@ import {
 import { AxiError } from "../errors.js";
 import { truncate } from "../format.js";
 import { buildHelp } from "../help.js";
+import { assertNotMangled } from "../msys.js";
+import { joinRemoteArgv } from "../remote-argv.js";
 import {
   renderCommand,
   requireTool,
@@ -29,6 +31,7 @@ export const help = buildHelp({
   notes: [
     "The host and port come from `show instance`; a direct instance uses its public ip and mapped 22/tcp port.",
     "For an interactive shell, run the printed ssh command yourself.",
+    'With 2+ words after `--`, a word holding spaces, quotes or shell operators is quoted so it arrives as one argument; plain words (`*`, `~`, `$VAR`) still expand remotely. For pipes, `&&` or redirects pass ONE quoted string: --exec -- "cd /w && ls | head".',
   ],
   examples: ["vast-axi ssh 42", "vast-axi ssh 42 --exec -- nvidia-smi"],
 });
@@ -67,6 +70,9 @@ export function createSshCommand(deps: SshDeps = {}): VastCommand {
       );
     }
 
+    if (exec) assertNotMangled(remote, "the remote command");
+    // Resolve the tool first so a missing ssh costs no vastai call.
+    const sshPath = exec ? resolveTool("ssh") : "";
     const endpoint = await requireEndpoint(id);
     const target = `root@${endpoint.host}`;
     const printed = renderCommand("ssh", ["-p", String(endpoint.port), target]);
@@ -81,21 +87,23 @@ export function createSshCommand(deps: SshDeps = {}): VastCommand {
       };
     }
 
-    const { run, sshArgs } = await runSsh(
-      spawn,
-      resolveTool("ssh"),
-      id,
-      endpoint,
-      remote,
-    );
+    const { run, sshArgs } = await runSsh(spawn, sshPath, id, endpoint, [
+      joinRemoteArgv(remote),
+    ]);
     const output = truncate(run.stdout, OUTPUT_CAP);
+    const stderr = run.stderr.trim();
     return {
       instance: `#${id}`,
       ssh: renderCommand("ssh", sshArgs),
       exit_code: run.exitCode,
       ...(output ? { output } : {}),
-      ...(run.stderr.trim()
-        ? { stderr: truncate(run.stderr.trim(), 2_000) }
+      ...(stderr ? { stderr: truncate(stderr, 2_000) } : {}),
+      ...(run.exitCode !== 0 && !output && !stderr
+        ? {
+            help: [
+              "The remote command printed nothing; for pipes, `&&` or redirects pass ONE quoted string after `--`",
+            ],
+          }
         : {}),
     };
   };

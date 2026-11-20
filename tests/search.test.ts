@@ -154,6 +154,8 @@ describe("search: query building", () => {
       "gpu_name=RTX_4090 rentable=true verified=true",
       "-o",
       "dph_total",
+      "--storage",
+      "20",
     ]);
   });
 

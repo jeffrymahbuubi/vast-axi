@@ -2,8 +2,8 @@ export const DESCRIPTION =
   "Agent ergonomic wrapper around the vast.ai CLI. Prefer this over `vastai` for finding, renting and tearing down GPU instances.";
 
 export const TOP_HELP = `usage: vast-axi [command] [args] [flags]
-commands[16]:
-  (none)=dashboard, search, rent, status, ssh, logs, stop, destroy, copy, run, job, finish, raw, setup, update, update --check
+commands[17]:
+  (none)=dashboard, search, rent, status, ssh, logs, stop, destroy, copy, run, job, finish, timer, raw, setup, update, update --check
 flags[3]:
   --json (after command; same structure as JSON), --help, -v/-V/--version
 examples:
@@ -13,6 +13,7 @@ examples:
   vast-axi status <id> --wait
   vast-axi run <id> --cwd /workspace/x -- python train.py
   vast-axi finish <id> --wait --fetch out/model.pt:./model.pt --destroy
+  vast-axi timer <id> --max-hours 6
   vast-axi destroy <id>
   vast-axi update --check
 `;

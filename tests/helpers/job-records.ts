@@ -19,6 +19,8 @@ export interface RecordOpts {
   /** Raw tail text (base64-encoded for the wire). */
   tail?: string;
   now?: string;
+  /** Raw value of the `@vaxi gpu` line, for example `0, 165;`. */
+  gpu?: string;
 }
 
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
@@ -45,6 +47,7 @@ export function record(o: RecordOpts = {}): string {
     if (o.tail !== undefined) lines.push(`@vaxi tail ${b64(o.tail)}`);
   }
   if (o.exitfile) lines.push(`@vaxi exitfile ${o.exitfile}`);
+  if (o.gpu !== undefined) lines.push(`@vaxi gpu ${o.gpu}`);
   lines.push(`@vaxi now ${o.now ?? "2026-10-20T10:05:00Z"}`);
   return `${lines.join("\n")}\n`;
 }

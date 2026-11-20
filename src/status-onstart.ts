@@ -38,7 +38,7 @@ const NO_SSH_SIGNATURE =
   /\/\.launch: line \d+: (?:ssh|sshd): command not found|sshd: not found|\/usr\/sbin\/sshd: No such file or directory/;
 
 /** The launcher's no-ssh line from the container log, or undefined (also on any fetch failure). */
-async function findNoSshLine(id: number): Promise<string | undefined> {
+export async function findNoSshLine(id: number): Promise<string | undefined> {
   try {
     const text = await fetchLogText(id, LOG_TAIL);
     return text
@@ -50,7 +50,11 @@ async function findNoSshLine(id: number): Promise<string | undefined> {
   }
 }
 
-function noSshError(id: number, inst: StatusInstance, line: string): AxiError {
+export function noSshError(
+  id: number,
+  inst: StatusInstance,
+  line: string,
+): AxiError {
   const image = inst.image_uuid ?? "unknown";
   return new AxiError(
     `The image ${image} has no ssh, so vast.ai cannot start sshd and the instance is never reachable (container log: '${redactSecrets(truncate(line, 200))}')`,

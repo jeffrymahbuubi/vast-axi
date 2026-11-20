@@ -278,6 +278,30 @@ export async function deleteScheduledJob(jobId: number): Promise<void> {
   }
 }
 
+/** What is wrong with `job` as the DAILY destroy timer of `instanceId` for `plan` (empty when it is right). */
+export function timerProblems(
+  job: ScheduledJob,
+  instanceId: number,
+  plan: DestroyPlan,
+): string[] {
+  const problems: string[] = [];
+  if (job.frequency !== "DAILY") {
+    problems.push(`frequency ${String(job.frequency)} instead of DAILY`);
+  }
+  if (job.hour_of_the_day !== plan.hour) {
+    problems.push(
+      `hour_of_the_day ${String(job.hour_of_the_day)} instead of ${plan.hour}`,
+    );
+  }
+  if (job.request_method !== "DELETE") {
+    problems.push(`method ${String(job.request_method)} instead of DELETE`);
+  }
+  if (destroyTarget(job) !== instanceId) {
+    problems.push(`it does not target instance ${instanceId}`);
+  }
+  return problems;
+}
+
 /**
  * Read the job back (OQ42): it must be listed, DAILY at the planned hour, a
  * DELETE on this instance's endpoint. Throws a RestError saying what is off; the
@@ -304,21 +328,7 @@ export async function verifyDestroyTimer(
       `scheduled job ${jobId} was accepted but is not in \`show scheduled-jobs\``,
     );
   }
-  const problems: string[] = [];
-  if (job.frequency !== "DAILY") {
-    problems.push(`frequency ${String(job.frequency)} instead of DAILY`);
-  }
-  if (job.hour_of_the_day !== plan.hour) {
-    problems.push(
-      `hour_of_the_day ${String(job.hour_of_the_day)} instead of ${plan.hour}`,
-    );
-  }
-  if (job.request_method !== "DELETE") {
-    problems.push(`method ${String(job.request_method)} instead of DELETE`);
-  }
-  if (destroyTarget(job) !== instanceId) {
-    problems.push(`it does not target instance ${instanceId}`);
-  }
+  const problems = timerProblems(job, instanceId, plan);
   if (problems.length > 0) {
     await deleteScheduledJob(jobId).catch(() => undefined);
     throw new RestError(

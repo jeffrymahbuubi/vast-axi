@@ -13,6 +13,10 @@ import {
 } from "../endpoint.js";
 import { AxiError } from "../errors.js";
 import { buildHelp } from "../help.js";
+import { assertNotMangled } from "../msys.js";
+import { joinRemoteArgv } from "../remote-argv.js";
+import { timerNote } from "../timer-note.js";
+import { requireTool } from "../transfer.js";
 import {
   DEFAULT_CWD,
   DEFAULT_NAME,
@@ -36,11 +40,11 @@ export const help = buildHelp({
   flags: [
     `--name <n>   job name (default ${DEFAULT_NAME}); letters, digits, _ . -`,
     `--cwd <dir>  absolute working directory (default ${DEFAULT_CWD}); must exist; / and /root are refused`,
-    "--log <path>  log file (default <cwd>/run.log); relative paths resolve against --cwd",
+    "--log <path>  log file (default <cwd>/run.log for main, else <cwd>/<name>.log); relative paths resolve against --cwd",
     "--overwrite  reuse a log file that already exists (it is truncated)",
   ],
   notes: [
-    "Everything after `--` is joined with spaces and run by `bash -c`, the same as `ssh --exec`.",
+    "Everything after `--` runs under `bash -c`. With 2+ words after `--`, a word holding spaces, quotes or shell operators is quoted so it arrives as one argument; plain words (`*`, `~`, `$VAR`) still expand remotely. For pipes, `&&` or redirects pass ONE quoted string, the same as `ssh --exec`.",
     "Follow it with `vast-axi job <id>` (state, exit code, log tail) and `vast-axi finish <id> --wait --fetch ... --destroy`.",
     "Use this instead of nohup/screen by hand; `logs` shows only the container log, not this program's output.",
   ],
@@ -63,24 +67,34 @@ export function createRunCommand(deps: JobDeps = {}): VastCommand {
     const overwrite = takeBoolFlag(args, "--overwrite");
     const id = parseInstanceId(takePositional(args, "id", `usage: ${USAGE}`));
     assertNoExtra(args, USAGE);
-    const command = words.join(" ");
+    assertNotMangled(words, "the program");
+    const command = joinRemoteArgv(words);
     if (command.trim() === "" || command.includes("\0")) {
       throw new AxiError("run needs a program after `--`", "VALIDATION_ERROR", [
         `usage: ${USAGE}`,
       ]);
     }
-    const log = resolveRemotePath(logRaw ?? "run.log", cwd, "--log");
-
-    const endpoint = await requireEndpoint(id);
-    const result = await runProbe(
-      deps,
-      id,
-      endpoint,
-      buildLaunchScript(
-        { name, token: newToken(), cwd, log, command, overwrite },
-        TAIL_LINES,
-      ),
+    const log = resolveRemotePath(
+      logRaw ?? (name === DEFAULT_NAME ? "run.log" : `${name}.log`),
+      cwd,
+      "--log",
     );
+
+    // Resolve ssh first so a missing client costs no vastai call.
+    (deps.resolveTool ?? requireTool)("ssh");
+    const endpoint = await requireEndpoint(id);
+    const [result, note] = await Promise.all([
+      runProbe(
+        deps,
+        id,
+        endpoint,
+        buildLaunchScript(
+          { name, token: newToken(), cwd, log, command, overwrite },
+          TAIL_LINES,
+        ),
+      ),
+      (deps.timerNote ?? timerNote)(id),
+    ]);
 
     switch (result.kind) {
       case "nocwd":
@@ -119,7 +133,8 @@ export function createRunCommand(deps: JobDeps = {}): VastCommand {
         return {
           ...view,
           ...(rec.pid !== undefined ? { pid: rec.pid } : {}),
-          help: stateHelp(id, rec),
+          ...note.fields,
+          help: [...stateHelp(id, rec), ...note.help],
         };
       }
       default:

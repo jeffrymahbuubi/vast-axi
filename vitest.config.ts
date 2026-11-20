@@ -5,5 +5,6 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     exclude: ['tests/live/**', 'node_modules/**'],
     testTimeout: 90_000,
+    setupFiles: ['tests/helpers/no-real-ssh.ts'],
   },
 });
