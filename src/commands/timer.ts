@@ -30,7 +30,7 @@ import { formatDuration, money } from "../format.js";
 import { buildHelp } from "../help.js";
 import { takeMaxHoursFlag } from "../rent-timer.js";
 import { TimerUpdateError, updateDestroyTimer } from "../timer-update.js";
-import { requireApiKey, scrubSecrets } from "../vast-rest.js";
+import { requireApiKey, RestError, scrubSecrets } from "../vast-rest.js";
 import { vastJson } from "../vastai.js";
 import type { VastCommand } from "./types.js";
 
@@ -220,9 +220,22 @@ async function setTimer(
           ],
         );
       }
+      // I10: a numeric status means vast.ai answered; anything else may have been applied.
+      const certain =
+        error instanceof TimerUpdateError && typeof error.status === "number";
+      if (certain) {
+        throw timerFail(
+          `could not move the destroy timer (${whyText(error, apiKey)}): timer unchanged${was ? `, still ${was}` : ""}`,
+          [
+            `Run \`vast-axi timer ${id}\` to check it; the instance is untouched`,
+          ],
+        );
+      }
       throw timerFail(
-        `could not move the destroy timer (${whyText(error, apiKey)}): timer unchanged${was ? `, still ${was}` : ""}`,
-        [`Run \`vast-axi timer ${id}\` to check it; the instance is untouched`],
+        `could not confirm the timer change (${whyText(error, apiKey)}): the timer may or may not have moved; it was ${was ?? "unknown"}`,
+        [
+          `Run \`vast-axi timer ${id}\` to see what it is now; the instance is untouched`,
+        ],
       );
     }
   } else {
@@ -230,8 +243,25 @@ async function setTimer(
       jobId = await createDestroyTimer(id, plan, apiKey);
       await verifyDestroyTimer(jobId, id, plan);
     } catch (error) {
+      const status = error instanceof RestError ? error.status : null;
+      const why = whyText(error, apiKey);
+      if (status === 422) {
+        // createDestroyTimer's own 422 text already says this; don't repeat it.
+        const exists = "a destroy timer already exists";
+        throw timerFail(why.startsWith(exists) ? why : `${exists} (${why})`, [
+          `Run \`vast-axi timer ${id}\` to see it`,
+        ]);
+      }
+      if (typeof status === "number") {
+        throw timerFail(
+          `could not set a destroy timer (${why}): no timer was set`,
+          [
+            `Retry \`vast-axi timer ${id} --max-hours ${maxHours}\`; the instance is untouched`,
+          ],
+        );
+      }
       throw timerFail(
-        `could not set a destroy timer (${whyText(error, apiKey)}): the instance has no timer`,
+        `could not set a destroy timer (${why}): the instance may have no timer`,
         [
           `Run \`vast-axi timer ${id}\` to check, then retry; the instance is untouched`,
         ],

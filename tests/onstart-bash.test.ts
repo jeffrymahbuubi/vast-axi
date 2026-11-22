@@ -231,7 +231,8 @@ suite("the onstart text under real bash", () => {
   it("E78: while the restarted job runs it is running with no marker, not the old finished one", async () => {
     fresh();
     const go = join(home, "GO");
-    const script = `while [ ! -f '${bashPath(go)}' ]; do sleep 0.2; done
+    // Bounded (about 120 s) so a failed assertion or a dead worker cannot leave it spinning (#12).
+    const script = `i=0; while [ ! -f '${bashPath(go)}' ] && [ $i -lt 600 ]; do sleep 0.2; i=$((i+1)); done
 echo late
 `;
     writeFileSync(go, "");

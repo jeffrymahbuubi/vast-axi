@@ -29,6 +29,7 @@ export const help = buildHelp({
   notes: [
     "arguments are forwarded unchanged, so `vastai` flags such as --limit work as usual",
     "a JSON body that holds an error exits 1; other exit codes are kept as vastai reported them",
+    "--api-key is refused (the key would show in the process list): set VAST_API_KEY or run `vast-axi setup key <key>`",
     "no guard rails here: raw does not apply the spend cap, so prefer `rent`, `stop` and `destroy`",
   ],
   examples: [
@@ -110,6 +111,15 @@ function textOutput(text: string, args: string[], full: boolean): Plain {
   };
 }
 
+/**
+ * `--api-key`, `--api-key=<k>` or an argparse prefix of it (`--a` and up: vastai
+ * keeps argparse's default abbreviations, and no other global flag starts `--a`).
+ */
+function isApiKeyFlag(arg: string): boolean {
+  const name = arg.split("=", 1)[0]!;
+  return name.length >= 3 && "--api-key".startsWith(name);
+}
+
 /** Factory so tests can inject the vastai runner; real runs use the default below. */
 export function createRawCommand(
   deps: { runner?: VastRunner } = {},
@@ -117,6 +127,13 @@ export function createRawCommand(
   return async (args) => {
     const rest = [...args];
     const full = takeBoolFlag(rest, "--full");
+    if (rest.some(isApiKeyFlag)) {
+      throw new AxiError(
+        "raw does not take --api-key: the key would be visible in the process list",
+        "VALIDATION_ERROR",
+        ["Set VAST_API_KEY, or store the key with `vast-axi setup key <key>`"],
+      );
+    }
     if (rest.length === 0) {
       throw new AxiError("raw needs a vastai command", "VALIDATION_ERROR", [
         `usage: ${USAGE}`,

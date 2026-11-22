@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { REGISTRY, type Registry } from "../src/commands/index.js";
 import * as job from "../src/commands/job.js";
@@ -9,7 +12,7 @@ import {
   recordingSpawner,
   type SpawnCall,
 } from "./helpers/job-records.js";
-import { runCli } from "./helpers/run-cli.js";
+import { newCallLog, readCallLog, runCli } from "./helpers/run-cli.js";
 
 /** A registry whose `job` talks to a recording spawner instead of ssh. */
 function jobRegistry(reply: (call: SpawnCall) => ToolRun): {
@@ -212,5 +215,17 @@ describe("job", () => {
     expect(h.stdout).toContain("usage: vast-axi job <id>");
     const logs = await runCli(["logs", "--help"]);
     expect(logs.stdout).toContain("vast-axi job <id>");
+  });
+});
+
+describe("job without an ssh client", () => {
+  it("E121: no ssh client means TRANSFER_TOOL_MISSING and zero vastai calls", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "vast-axi-nopath-"));
+    const log = newCallLog();
+    const out = await runCli(["job", "42"], {
+      env: { PATH: empty, FAKE_VASTAI_LOG: log },
+    });
+    expect(out.stdout).toContain("code: TRANSFER_TOOL_MISSING");
+    expect(readCallLog(log)).toHaveLength(0);
   });
 });

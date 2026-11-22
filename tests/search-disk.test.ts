@@ -88,6 +88,51 @@ describe("search --disk (#4)", () => {
     expect(r.json.priced_for_disk_gb).toBe(30);
   });
 
+  it("E179: --query dph_total<X drops repriced rows above the cap; aggregates follow", async () => {
+    const r = await search(
+      ["--disk", "30", "--query", "dph_total<0.7"],
+      REPRICED,
+    );
+    const rows = r.json.offers as Row[];
+    expect(rows.map((o) => o["dph_total"])).toEqual([0.45, 0.62]);
+    expect(r.json.count).toBe(2);
+    expect(r.json.min_dph).toBe(0.45);
+    expect(r.json.median_dph).toBe(0.535);
+  });
+
+  it("E179: < is strict and <= is not (a row priced exactly at the cap)", async () => {
+    const strict = await search(["--query", "dph_total<0.71"], REPRICED);
+    expect(strict.json.count).toBe(2);
+    const loose = await search(["--query", "dph<=0.71"], REPRICED);
+    expect(loose.json.count).toBe(3);
+  });
+
+  it("E180: the tighter of --max-dph and the query cap applies", async () => {
+    const q = await search(
+      ["--query", "dph<=0.7", "--max-dph", "0.8"],
+      REPRICED,
+    );
+    expect(q.json.count).toBe(2);
+    const m = await search(
+      ["--query", "dph_total<=0.8", "--max-dph", "0.65"],
+      REPRICED,
+    );
+    expect(m.json.count).toBe(2);
+  });
+
+  it("E180: a lower bound in --query is not re-checked", async () => {
+    const r = await search(["--query", "dph_total>0.2"], REPRICED);
+    expect(r.json.count).toBe(4);
+  });
+
+  it("E181: every row above the query cap gives an empty state naming the --query cap", async () => {
+    const r = await search(["--query", "dph_total<0.1"], REPRICED);
+    expect(r.exitCode).toBe(0);
+    expect(r.json.offers).toBe("0 matching offers");
+    expect(r.json.help?.[0]).toMatch(/--query price cap \(dph_total<0\.1\)/);
+    expect(r.json.help?.[0]).not.toContain("--max-dph");
+  });
+
   it.each(["0", "abc"])(
     "E149: --disk %s exits 2 before any call and names the flag",
     async (value) => {

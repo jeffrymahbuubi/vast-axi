@@ -116,10 +116,12 @@ export function parseFetchSpec(spec: string): {
   local: string;
 } {
   const i = spec.indexOf(":");
-  // Git Bash rewrote the remote half into a Windows path (V11, F4).
+  // Git Bash rewrote the remote half into a Windows path (V11, F4). Only
+  // possible on Windows or under MSYS; elsewhere `o:/tmp/x` is remote `o` (G11).
+  const msys = process.platform === "win32" || Boolean(process.env["MSYSTEM"]);
   if (
-    /^[A-Za-z]:[\\/]/.test(spec) ||
-    (i > 0 && spec.slice(0, i).includes("\\"))
+    msys &&
+    (/^[A-Za-z]:[\\/]/.test(spec) || (i > 0 && spec.slice(0, i).includes("\\")))
   ) {
     throw bad(
       `--fetch "${spec}" looks like a rewritten Windows path, not <remote>:<local>`,

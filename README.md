@@ -24,7 +24,7 @@ Agent-ergonomic wrapper around the official [vast.ai CLI](https://github.com/vas
 Each release has a prebuilt tarball attached. Install it straight from the release; no build runs on install:
 
 ```bash
-npm i -g https://github.com/jeffrymahbuubi/vast-axi/releases/download/v0.3.0/vast-axi-0.3.0.tgz
+npm i -g https://github.com/jeffrymahbuubi/vast-axi/releases/download/v0.3.1/vast-axi-0.3.1.tgz
 ```
 
 `vast-axi update` installs the newest release (it uses the `gh` CLI, logged in). Add `--pre` to include pre-releases.
@@ -77,7 +77,7 @@ With `--hours N`, `rent` also refuses (`OVER_BALANCE`) when N x (current burn + 
 - N is capped at 23 because a daily job cannot be set further ahead. For longer runs, end with `vast-axi finish <id> --wait --fetch <remote>:<local> --destroy`.
 - If the offer's rental contract ends before `destroy_at`, `rent` refuses with exit 2 (`--confirm` overrides). vast.ai stops an instance at contract end, and a stopped instance still bills storage.
 - `destroy` and `finish --destroy` also delete the timer. `status <id>`, `timer <id>`, the dashboard, `run`, `job` and `finish` show `destroy_at`; `run`, `job` and `finish` add `timer_left`, and `timer_warning` when it fires within 30 minutes or before `finish --timeout` ends.
-- **Extend it:** `timer <id> --max-hours N` moves the job to N hours from now (2 to 23, rounded down to the hour) and reads it back. If the change fails (`TIMER_FAILED`, exit 1), the old timer stays and the instance is never stopped or destroyed. It checks N hours of burn against the balance like `rent` (`--confirm` overrides).
+- **Extend it:** `timer <id> --max-hours N` moves the job to N hours from now (2 to 23, rounded down to the hour) and reads it back. If the change fails (`TIMER_FAILED`, exit 1), the instance is never stopped or destroyed. It says "timer unchanged" or "no timer was set" only after an HTTP error from vast.ai; after a timeout or network error it says the timer "may or may not have moved" (or "the instance may have no timer"), so run `timer <id>` to see the real state. It checks N hours of burn against the balance like `rent` (`--confirm` overrides).
 - `--max-hours N` implies `--hours N` for the balance check.
 - **Legacy timers:** v0.1.4 to v0.1.6 created HOURLY jobs. vast.ai fires those at the next top of the hour, ignoring the planned time. `status` and the dashboard flag them as `LEGACY` and print the command to delete them.
 
@@ -104,10 +104,10 @@ Set the limits in `~/.config/vast-axi/config.json` (`maxDph`, `maxBurn`, `idleMi
 - `finish --wait` can run for hours, longer than most agent tool timeouts. Run it in the background, or call `finish` without `--wait` in a loop. It prints one progress line per poll to stderr; stdout holds only the result.
 - `job` shows the tail of the job's log, so the program has to write to stdout while it runs. Run Python unbuffered (`python -u`). Notebook runners print nothing until they finish unless told to stream, e.g. `papermill in.ipynb out.ipynb --log-output`.
 - `status` shows `ssh_direct`, the endpoint `ssh` and `copy` connect to, next to vast.ai's proxy endpoint. Use the direct one for a manual `ssh -L` tunnel.
-- `search` and `rent` price offers for the same disk (`--disk`, default 20 GB) and both print `priced_for_disk_gb`. vast.ai filters `--max-dph` on the price before storage, so `search` drops rows over `--max-dph` after repricing. A `driver_version` term in `--query` needs three parts (`driver_version>=555.0.0`); vastai's query errors exit 2.
+- `search` and `rent` price offers for the same disk (`--disk`, default 20 GB) and both print `priced_for_disk_gb`. vast.ai filters `--max-dph` on the price before storage, so `search` drops rows over `--max-dph` after repricing, and does the same for upper price bounds in `--query` (`dph_total<X`, `dph<=X`); the tightest cap applies, so `count` can be lower than vastai's. A `driver_version` term in `--query` needs three parts (`driver_version>=555.0.0`); vastai's query errors exit 2.
 - **Quoting after `--`:** one word is sent to the remote shell as is, so pass pipes, `&&` and redirects as ONE quoted string (`--exec -- "cd /w && ls | head"`). With two or more words, each word that holds spaces, quotes or shell operators is quoted, so `-- python -c "import a; print(a)"` arrives intact; plain words (`*`, `~`, `$VAR`) still expand remotely. This applies to `ssh --exec` and `run`.
-- **Git Bash:** run with `MSYS_NO_PATHCONV=1`. Without it Git Bash rewrites `/workspace/x` to `C:/Program Files/Git/workspace/x`; `ssh --exec`, `run`, `job` and `finish` refuse such paths (exit 2).
-- Not every image has `/workspace`. `copy` uploads create the destination's parent; a missing remote path is `REMOTE_PATH_MISSING`. `SSH_FAILED` and `TRANSFER_FAILED` hints depend on the cause (key, sshd not ready, host key, path).
+- **Git Bash:** run with `MSYS_NO_PATHCONV=1`. Without it Git Bash rewrites `/workspace/x` to `C:/Program Files/Git/workspace/x`; `ssh --exec`, `run`, `job` and `finish` refuse such paths (exit 2). Under Git Bash on Windows, a word of the `ssh --exec` remote command or the `run` program that starts with `<letter>:/` (or has `=<letter>:/`) is treated as rewritten and refused unless `MSYS_NO_PATHCONV=1` is set.
+- Not every image has `/workspace`. `copy` uploads create the destination's parent; a missing remote path is `REMOTE_PATH_MISSING`. Downloads need the local parent directory to exist (nothing is created locally), and `~user/` upload targets are refused: use an absolute path or `~/`. `raw` refuses `--api-key` (the key would show in the process list); set `VAST_API_KEY` instead. `SSH_FAILED` and `TRANSFER_FAILED` hints depend on the cause (key, sshd not ready, host key, path).
 - `job` and `finish --wait` flag a job that leaves every GPU under 5% after 5 minutes of run time (`gpu_warning`, one sample per check), for example a framework that silently fell back to the CPU. It never changes an exit code.
 - `finish --destroy` keeps the instance when the job failed or was lost, or when any fetched file is missing or its size differs from the remote copy. The output says why.
 

@@ -41,7 +41,7 @@ export async function updateDestroyTimer(
   apiKey: string,
 ): Promise<void> {
   try {
-    const { json } = await restRequest(
+    const { json, status } = await restRequest(
       "PUT",
       `/api/v0/commands/schedule_job/${jobId}/`,
       {
@@ -71,6 +71,7 @@ export async function updateDestroyTimer(
           ),
           apiKey,
         ),
+        status,
       );
     }
   } catch (error) {

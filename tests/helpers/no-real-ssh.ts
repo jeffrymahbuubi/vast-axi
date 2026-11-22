@@ -2,32 +2,34 @@
 // scp. Fixture instances carry documentation addresses, and a real ssh client
 // dialing them is outbound traffic that antivirus tools flag. A test that needs
 // ssh injects a fake spawner (`spawn` / `resolveTool` deps) instead.
-// The blocked spawn throws, and since vast-axi maps spawn errors to tool
+// The blocked start throws, and since vast-axi maps spawn errors to tool
 // errors (which some paths tolerate), every attempt is also recorded and
 // fails the test in afterEach, so a regression can never pass silently.
+// The wrapping logic lives in ./ssh-guard.ts; there is deliberately no export
+// that clears the attempts.
 import { afterEach, vi } from "vitest";
+import type { makeGuard } from "./ssh-guard.js";
 
-const attempts = vi.hoisted(() => [] as string[]);
+const guard = vi.hoisted(() => ({
+  current: null as null | ReturnType<typeof makeGuard>,
+}));
 
 vi.mock("node:child_process", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:child_process")>();
-  const blocked = /(^|[\\/])(ssh|scp)(\.exe)?$/i;
-  const spawn = ((file: string, ...rest: unknown[]) => {
-    if (blocked.test(String(file))) {
-      attempts.push(String(file));
-      throw new Error(
-        `test tried to start the real ${String(file)}; inject a fake spawner (tests/helpers/no-real-ssh.ts)`,
-      );
-    }
-    return (real.spawn as (...a: unknown[]) => unknown)(file, ...rest);
-  }) as typeof real.spawn;
-  return { ...real, spawn, default: { ...real, spawn } };
+  const { makeGuard: build } = await import("./ssh-guard.js");
+  const g = build(real as unknown as Parameters<typeof build>[0]);
+  guard.current = g;
+  const wrapped = {
+    spawn: g.spawn,
+    spawnSync: g.spawnSync,
+    execFile: g.execFile,
+    execFileSync: g.execFileSync,
+    exec: g.exec,
+    execSync: g.execSync,
+  };
+  return { ...real, ...wrapped, default: { ...real, ...wrapped } };
 });
 
 afterEach(() => {
-  if (attempts.length === 0) return;
-  const seen = attempts.splice(0).join(", ");
-  throw new Error(
-    `this test started the real ssh/scp (${seen}); inject a fake spawner`,
-  );
+  guard.current?.check();
 });

@@ -157,6 +157,44 @@ describe("raw (R14)", () => {
     expect(json.stdout).not.toContain("test-key-not-real");
   });
 
+  it.each([
+    ["--api-key", "test-key-not-real"],
+    ["--api-key=test-key-not-real"],
+    ["--api", "test-key-not-real"],
+    ["--ap=test-key-not-real"],
+  ])(
+    "E182: raw %j is refused before any call and never echoes the key",
+    async (...flag) => {
+      const log = newCallLog();
+      const out = await runCli(["raw", "show", "instances", ...flag.flat()], {
+        env: { FAKE_VASTAI_LOG: log },
+      });
+      expect(out.exitCode).toBe(2);
+      expect(out.stdout).toContain("code: VALIDATION_ERROR");
+      expect(out.stdout).toContain("raw does not take --api-key");
+      expect(out.stdout).toContain("VAST_API_KEY");
+      expect(out.stdout).not.toContain("test-key-not-real");
+      expect(readCallLog(log)).toEqual([]);
+    },
+  );
+
+  it("E183: show api-keys and set api-key are forwarded as before", async () => {
+    const log = newCallLog();
+    const a = await runCli(["raw", "show", "api-keys"], {
+      env: { FAKE_VASTAI_LOG: log },
+    });
+    expect(a.stdout).not.toContain("raw does not take --api-key");
+    const b = await runCli(["raw", "set", "api-key", "test-key-not-real"], {
+      env: { FAKE_VASTAI_LOG: log },
+    });
+    expect(b.stdout).not.toContain("raw does not take --api-key");
+    const calls = readCallLog(log);
+    expect(calls.map((c) => c.argv.slice(3))).toEqual([
+      ["show", "api-keys"],
+      ["set", "api-key", "test-key-not-real"],
+    ]);
+  });
+
   it("reports vastai as not installed when the binary is missing", async () => {
     const out = await runCli(["raw", "show", "volumes"], {
       env: { VAST_AXI_BIN: join(tmpdir(), "no-such-vastai.cjs") },

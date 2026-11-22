@@ -132,6 +132,8 @@ describe("status --wait: ssh readiness", () => {
     expect(r.ssh).toHaveLength(3);
     // The remote command is `true`, and the poll is capped at 5 s.
     expect(r.ssh[0]!.args.at(-1)).toBe("true");
+    // E189: the probe bounds the connect (OQ63).
+    expect(r.ssh[0]!.args).toContain("ConnectTimeout=10");
     expect(clock.sleeps).toEqual([5000, 5000]);
   });
 

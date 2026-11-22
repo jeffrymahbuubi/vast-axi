@@ -127,7 +127,7 @@ export function requireTool(name: "ssh" | "scp"): string {
     throw new AxiError(
       `\`${name}\` on PATH is a batch shim (${shim}) that vast-axi cannot run`,
       "TRANSFER_TOOL_MISSING",
-      [installHint(), `Or put a real ${name}.exe ahead of the shim on PATH`],
+      [installHint(), `Or make sure a real ${name}.exe is on PATH`],
     );
   }
   throw new AxiError(
@@ -263,7 +263,16 @@ export function renderCommand(
  * a first-seen host key without prompting. `ssh --exec` and `status --live`
  * both go through here.
  */
-export function buildSshArgs(endpoint: Endpoint, remote: string[]): string[] {
+export interface SshOpts {
+  /** Adds `-o ConnectTimeout=<n>` (seconds; OpenSSH ssh_config option). */
+  connectTimeoutSec?: number;
+}
+
+export function buildSshArgs(
+  endpoint: Endpoint,
+  remote: string[],
+  opts: SshOpts = {},
+): string[] {
   return [
     "-p",
     String(endpoint.port),
@@ -271,6 +280,9 @@ export function buildSshArgs(endpoint: Endpoint, remote: string[]): string[] {
     "StrictHostKeyChecking=accept-new",
     "-o",
     "BatchMode=yes",
+    ...(opts.connectTimeoutSec === undefined
+      ? []
+      : ["-o", `ConnectTimeout=${opts.connectTimeoutSec}`]),
     `root@${endpoint.host}`,
     ...remote,
   ];
@@ -287,8 +299,9 @@ export async function runSsh(
   id: number,
   endpoint: Endpoint,
   remote: string[],
+  opts?: SshOpts,
 ): Promise<{ run: ToolRun; sshArgs: string[] }> {
-  const sshArgs = buildSshArgs(endpoint, remote);
+  const sshArgs = buildSshArgs(endpoint, remote, opts);
   const run = await spawn(sshPath, sshArgs, { capture: true });
   if (run.exitCode === 255) {
     throw new AxiError(

@@ -65,6 +65,7 @@ export async function waitForSsh(
           id,
           endpoint,
           ["true"],
+          { connectTimeoutSec: 10 },
         );
         if (run.exitCode === 0) {
           const elapsed = clock.now() - startedAt;

@@ -18,6 +18,7 @@ import {
   buildQuery,
   checkDriverQuery,
   durationDays,
+  effectiveCap,
   mentions,
   mentionsCuda,
   normalizeCuda,
@@ -89,6 +90,7 @@ export const help = buildHelp({
     "--precision <p>   fp32 | tf32 | fp16: rank by datasheet peak TFLOPS (x num_gpus) per $/hr from a static vendor table; implies --sort value",
   ],
   notes: [
+    "upper price bounds in --query (dph_total<X, dph<=X) are re-checked after repricing for --disk, like --max-dph; the tightest applies",
     "default filter: rentable=true verified=true; a --query that sets either field replaces that default",
     "gpu_ram_gb is GB; dph_total is USD per hour, priced for priced_for_disk_gb (storage is part of the price, so it matches what `rent --disk` charges)",
     "with --hours: est_cost = dph_total x n (USD), pct_balance = est_cost as a percent of your balance (one extra `show user` call)",
@@ -310,12 +312,13 @@ export const command: VastCommand = async (args) => {
   }
   // --storage reprices dph_total after the server filtered on the base price (V7).
   const listed = body as Offer[];
+  const cap = effectiveCap(maxDph, query);
   const offers =
-    maxDph === undefined
+    cap === undefined
       ? listed
       : listed.filter((o) => {
           const dph = num(o["dph_total"]);
-          return dph === null || dph <= maxDph;
+          return dph === null || (cap.strict ? dph < cap.max : dph <= cap.max);
         });
 
   if (offers.length === 0) {
@@ -326,7 +329,9 @@ export const command: VastCommand = async (args) => {
         "0 matching offers",
         dropped
           ? [
-              `Every match is above --max-dph once priced for ${disk} GB; raise --max-dph (now ${maxDph}) or lower --disk`,
+              cap?.fromQuery
+                ? `Every match is above the --query price cap (dph_total${cap.strict ? "<" : "<="}${cap.max}) once priced for ${disk} GB; raise the cap in --query or lower --disk`
+                : `Every match is above --max-dph once priced for ${disk} GB; raise --max-dph (now ${maxDph}) or lower --disk`,
               ...relaxHints(filters),
             ]
           : relaxHints(filters),

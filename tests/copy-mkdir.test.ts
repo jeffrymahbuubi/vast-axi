@@ -140,3 +140,63 @@ describe("copy uploads create the destination parent", () => {
     expect(readCallLog(log)).toEqual([]);
   });
 });
+
+describe("copy G7 and G8", () => {
+  const down = (dest: string) => ["copy", "C.42:/workspace/out", dest];
+
+  it("E175: download into a missing local directory is exit 2 with zero calls", async () => {
+    const base = mkdtempSync(join(tmpdir(), "vast-axi-down-"));
+    const { calls, registry } = world();
+    const out = await runCli(down(join(base, "nope", "sub", "out")), {
+      registry,
+    });
+    expect(out.exitCode).toBe(2);
+    expect(out.stdout).toContain("code: VALIDATION_ERROR");
+    expect(out.stdout).toContain("local directory not found");
+    expect(out.stdout).toContain("sub");
+    expect(out.stdout).not.toContain('out"');
+    expect(calls).toEqual([]);
+  });
+
+  it("E176: download to a new name or an existing directory runs scp", async () => {
+    const base = mkdtempSync(join(tmpdir(), "vast-axi-down-"));
+    const a = world();
+    const outA = await runCli(down(join(base, "newname")), {
+      registry: a.registry,
+    });
+    expect(outA.exitCode).toBe(0);
+    expect(a.calls.map((c) => c.file)).toEqual(["scp"]);
+    const b = world();
+    const outB = await runCli(down(base), { registry: b.registry });
+    expect(outB.exitCode).toBe(0);
+    expect(b.calls.map((c) => c.file)).toEqual(["scp"]);
+  });
+
+  it("E177: ~user/ upload is exit 2 before any call; ~/ works unquoted", async () => {
+    const a = world();
+    const outA = await runCli(up("~bob/x/y"), { registry: a.registry });
+    expect(outA.exitCode).toBe(2);
+    expect(outA.stdout).toContain("code: VALIDATION_ERROR");
+    expect(outA.stdout).toContain("not supported");
+    expect(a.calls).toEqual([]);
+
+    const b = world();
+    const outB = await runCli(up("~/x/y"), { registry: b.registry });
+    expect(outB.exitCode).toBe(0);
+    expect(b.calls[0]!.args.at(-1)).toBe("mkdir -p -- ~/'x'");
+  });
+
+  it("E178: scp 'No such file or directory' stays REMOTE_PATH_MISSING with the ls hint", async () => {
+    const base = mkdtempSync(join(tmpdir(), "vast-axi-down-"));
+    const { registry } = world({
+      scp: {
+        exitCode: 1,
+        stderr: "scp: /workspace/out: No such file or directory",
+      },
+    });
+    const out = await runCli(down(join(base, "out")), { registry });
+    expect(out.exitCode).toBe(1);
+    expect(out.stdout).toContain("code: REMOTE_PATH_MISSING");
+    expect(out.stdout).toContain("ls -la /workspace");
+  });
+});

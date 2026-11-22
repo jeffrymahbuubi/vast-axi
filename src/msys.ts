@@ -9,6 +9,7 @@ const norm = (s: string) => s.replace(/\\/g, "/").toLowerCase();
 
 function roots(): string[] {
   const out: string[] = [];
+  if (process.platform !== "win32") return out;
   const exe = process.env["EXEPATH"];
   if (exe) {
     const dir = norm(exe).replace(/\/+$/, "");
@@ -18,10 +19,25 @@ function roots(): string[] {
   return out;
 }
 
+/**
+ * OQ62: Git Bash on Windows (MSYSTEM set, path conversion not disabled)
+ * rewrites /x into <root>/x; with an unknown root any drive-letter word is
+ * suspect, so it is refused.
+ */
+function driveWordsSuspect(): boolean {
+  return (
+    process.platform === "win32" &&
+    Boolean(process.env["MSYSTEM"]) &&
+    !process.env["MSYS_NO_PATHCONV"]
+  );
+}
+
 /** The first word holding a Git Bash root prefix, if any. */
 export function findMangled(words: string[]): string | undefined {
   const extra = roots();
+  const drive = driveWordsSuspect();
   return words.find((w) => {
+    if (drive && /(^|=)[A-Za-z]:[\\/]/.test(w)) return true;
     if (/[A-Za-z]:[\\/]Program Files[\\/]Git[\\/]/i.test(w)) return true;
     const n = norm(w);
     return extra.some((r) => n.includes(r));

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AxiError } from "../src/errors.js";
-import { requireTool } from "../src/transfer.js";
+import { buildSshArgs, requireTool } from "../src/transfer.js";
 
 const REAL_PLATFORM = process.platform;
 const SAVED = { PATH: process.env["PATH"], PATHEXT: process.env["PATHEXT"] };
@@ -41,6 +41,43 @@ describe("E130: tools that spawn cannot start", () => {
     expect(e.suggestions.join("\n")).toContain(
       "Or make sure a real ssh.exe is on PATH",
     );
+  });
+
+  // Real win32 only: pathWith() joins PATH with the host's delimiter, which a
+  // stubbed win32 lookup on linux cannot split (ubuntu CI, 2026-11-22).
+  it.skipIf(REAL_PLATFORM !== "win32")(
+    "E190: win32 with only an ssh.cmd shim: the hint says to make sure a real ssh.exe is on PATH",
+    () => {
+      pathWith("ssh.cmd");
+      Object.defineProperty(process, "platform", { value: "win32" });
+      process.env["PATHEXT"] = ".EXE;.CMD;.BAT";
+      const e = missing(() => requireTool("ssh"));
+      expect(e.message).toContain("batch shim");
+      expect(e.suggestions).toContain("Or make sure a real ssh.exe is on PATH");
+    },
+  );
+
+  it("E189: buildSshArgs adds ConnectTimeout only when asked (I11)", () => {
+    const ep = { host: "h.example.test", port: 22000 };
+    const plain = buildSshArgs(ep, ["ls"]);
+    expect(plain).toEqual([
+      "-p",
+      "22000",
+      "-o",
+      "StrictHostKeyChecking=accept-new",
+      "-o",
+      "BatchMode=yes",
+      "root@h.example.test",
+      "ls",
+    ]);
+    expect(plain.join(" ")).not.toContain("ConnectTimeout");
+    const timed = buildSshArgs(ep, ["true"], { connectTimeoutSec: 10 });
+    expect(timed.slice(4, 8)).toEqual([
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=10",
+    ]);
   });
 
   it.skipIf(REAL_PLATFORM === "win32")(

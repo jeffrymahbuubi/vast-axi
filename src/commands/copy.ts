@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { posix } from "node:path";
+import { dirname, posix } from "node:path";
 import { assertKnownFlags, takeBoolFlag, takePositional } from "../args.js";
 import { assertNoExtra, requireEndpoint } from "../endpoint.js";
 import {
@@ -90,7 +90,17 @@ export function createCopyCommand(deps: CopyDeps = {}): VastCommand {
     const to = parseLocation(dst);
 
     // Checked before any network call or process start.
-    if (to.kind === "instance") assertSafeDestination(to.path);
+    if (to.kind === "instance") {
+      const dest = to.path.trim();
+      if (dest.length > 1 && dest.startsWith("~") && !dest.startsWith("~/")) {
+        throw new AxiError(
+          "`~user/` paths are not supported; use an absolute path such as /home/<user>/x",
+          "VALIDATION_ERROR",
+          ["Use an absolute path, or `~/x` for the login user's home"],
+        );
+      }
+      assertSafeDestination(to.path);
+    }
 
     if (from.kind === "local" && to.kind === "local") {
       throw new AxiError(
@@ -186,6 +196,17 @@ export function createCopyCommand(deps: CopyDeps = {}): VastCommand {
           `scan stopped at ${MAX_ENTRIES} entries; skipped by --allow-secrets`;
       }
       if (skipped) guard["guard_skipped"] = skipped;
+    }
+
+    if (direction === "down" && !existsSync(local.path)) {
+      const parent = dirname(local.path);
+      if (!existsSync(parent)) {
+        throw new AxiError(
+          `local directory not found: ${parent}`,
+          "VALIDATION_ERROR",
+          ["Create it first, then rerun; nothing was downloaded"],
+        );
+      }
     }
 
     const scp = resolveTool("scp");

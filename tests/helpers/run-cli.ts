@@ -16,13 +16,16 @@ export const FAKE_BIN = fileURLToPath(
   new URL("./fake-vastai.cjs", import.meta.url),
 );
 
+/** Default REST root for tests: loopback port 1, where nothing listens. */
+export const DEAD_API_URL = "http://127.0.0.1:1";
+
 /**
  * Environment for tests that go through the real runner: VAST_AXI_BIN points at
  * the fake, the user's config and any spend/fake variables are neutralised
  * (undefined deletes a variable), and `extra` overrides on top.
  */
 export function fakeEnv(extra: Env = {}): Env {
-  return {
+  const env: Env = {
     VAST_AXI_BIN: FAKE_BIN,
     VAST_API_KEY: "test-key-not-real",
     VAST_AXI_CONFIG: join(tmpdir(), "vast-axi-tests-no-such-config.json"),
@@ -34,8 +37,13 @@ export function fakeEnv(extra: Env = {}): Env {
     FAKE_VASTAI_ROUTES: undefined,
     FAKE_VASTAI_LOG: undefined,
     FAKE_VASTAI_VERSION: undefined,
+    VAST_AXI_API_URL: DEAD_API_URL,
     ...extra,
   };
+  // A test that needs REST passes its fake server URL; an absent or undefined
+  // value never falls through to the real https://console.vast.ai (I12).
+  if (!env["VAST_AXI_API_URL"]) env["VAST_AXI_API_URL"] = DEAD_API_URL;
+  return env;
 }
 
 /** A fresh call-log path for FAKE_VASTAI_LOG. */

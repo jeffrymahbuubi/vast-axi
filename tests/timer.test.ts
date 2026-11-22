@@ -180,7 +180,7 @@ describe("timer --max-hours: failures", () => {
     },
   );
 
-  it("E140: a PUT that times out is TIMER_FAILED, unchanged", async () => {
+  it("E140: a PUT that times out is TIMER_FAILED, may or may not have moved", async () => {
     const fake = await serve(() => ({ hang: true }));
     const r = await timer([String(INSTANCE), "--max-hours", "3"], {
       ...withOld,
@@ -190,7 +190,7 @@ describe("timer --max-hours: failures", () => {
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toContain("TIMER_FAILED");
     expect(r.stdout).toContain("no answer from the vast.ai API");
-    expect(r.stdout).toContain("unchanged");
+    expect(r.stdout).toContain("may or may not have moved");
     expect(none(r, "delete", "scheduled-job")).toHaveLength(0);
   });
 

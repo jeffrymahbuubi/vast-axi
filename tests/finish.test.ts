@@ -1,6 +1,9 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { decodeRemote, ok, type SpawnCall } from "./helpers/job-records.js";
-import { runCli } from "./helpers/run-cli.js";
+import { newCallLog, readCallLog, runCli } from "./helpers/run-cli.js";
 import {
   build,
   failed,
@@ -303,4 +306,22 @@ describe("finish: arguments", () => {
     expect(body["state"]).toBe("finished");
     expect(body["finish"]).toBe("complete");
   });
+});
+
+describe("finish without an ssh client", () => {
+  it.each([
+    ["without --fetch", ["finish", "42"]],
+    ["with --fetch", ["finish", "42", "--fetch", "out/m.pt:./m.pt"]],
+  ])(
+    "E121: no ssh client %s means TRANSFER_TOOL_MISSING and zero vastai calls",
+    async (_name, argv) => {
+      const empty = mkdtempSync(join(tmpdir(), "vast-axi-nopath-"));
+      const log = newCallLog();
+      const out = await runCli(argv, {
+        env: { PATH: empty, FAKE_VASTAI_LOG: log },
+      });
+      expect(out.stdout).toContain("code: TRANSFER_TOOL_MISSING");
+      expect(readCallLog(log)).toHaveLength(0);
+    },
+  );
 });

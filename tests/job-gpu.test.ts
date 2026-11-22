@@ -170,19 +170,27 @@ describe("FR3 as_of", () => {
 
 describe("FR3 fetch spec", () => {
   it("E137: a rewritten Windows path in --fetch is refused with the MSYS hint", () => {
-    for (const spec of [
-      "C:/Program Files/Git/workspace/out:./o",
-      "out\\run;C:\\tmp",
-      "D:\\x\\y:./o",
-    ]) {
-      let err: unknown;
-      try {
-        parseFetchSpec(spec);
-      } catch (e) {
-        err = e;
+    // The refusal applies on win32 or under MSYSTEM only (G11, E187/E188), so
+    // pin the platform: this row must also pass on the ubuntu CI runner.
+    const real = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      for (const spec of [
+        "C:/Program Files/Git/workspace/out:./o",
+        "out\\run;C:\\tmp",
+        "D:\\x\\y:./o",
+      ]) {
+        let err: unknown;
+        try {
+          parseFetchSpec(spec);
+        } catch (e) {
+          err = e;
+        }
+        expect(JSON.stringify(err), spec).toMatch(/MSYS_NO_PATHCONV=1/);
+        expect(JSON.stringify(err), spec).toMatch(/VALIDATION_ERROR/);
       }
-      expect(JSON.stringify(err), spec).toMatch(/MSYS_NO_PATHCONV=1/);
-      expect(JSON.stringify(err), spec).toMatch(/VALIDATION_ERROR/);
+    } finally {
+      Object.defineProperty(process, "platform", { value: real });
     }
   });
 

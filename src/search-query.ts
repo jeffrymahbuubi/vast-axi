@@ -168,3 +168,46 @@ export function upstreamQueryError(output: string): string | undefined {
     .find((l) => known.test(l));
   return line?.replace(/^Error:\s*/, "");
 }
+
+const DPH_CAP =
+  /(^|\s)(?:dph_total|dph)\s*(<=|<)\s*['"]?(\d+(?:\.\d+)?|\.\d+)/g;
+
+export interface DphCap {
+  max: number;
+  strict: boolean;
+}
+
+/**
+ * The tightest upper price bound in a raw query (`dph_total<0.3`, `dph<=0.5`;
+ * `dph` is vastai's alias for `dph_total`). Repricing for `--disk` only raises
+ * the price, so lower bounds and `=` need no re-check (G9).
+ */
+export function queryDphCap(query: string | undefined): DphCap | undefined {
+  let best: DphCap | undefined;
+  for (const m of (query ?? "").matchAll(DPH_CAP)) {
+    const max = Number(m[3]);
+    if (!Number.isFinite(max)) continue;
+    const strict = m[2] === "<";
+    if (
+      best === undefined ||
+      max < best.max ||
+      (max === best.max && strict && !best.strict)
+    ) {
+      best = { max, strict };
+    }
+  }
+  return best;
+}
+
+/** The cap `search` re-applies after repricing: the tighter of `--max-dph` and the query's. */
+export function effectiveCap(
+  maxDph: number | undefined,
+  query: string | undefined,
+): (DphCap & { fromQuery: boolean }) | undefined {
+  const q = queryDphCap(query);
+  if (maxDph === undefined) return q && { ...q, fromQuery: true };
+  if (q === undefined || maxDph < q.max || (maxDph === q.max && !q.strict)) {
+    return { max: maxDph, strict: false, fromQuery: false };
+  }
+  return { ...q, fromQuery: true };
+}

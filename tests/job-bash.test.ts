@@ -138,9 +138,14 @@ suite("generated scripts under real bash", () => {
   };
   const logText = (): string => readFileSync(join(work, "run.log"), "utf8");
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  /** Run `command` only after release(): keeps a job alive for exactly as long as a test needs, however slow the machine. */
-  const hold = (command: string) =>
-    `while [ ! -f '${bashPath(work)}/GO' ]; do sleep 0.2; done; ${command}`;
+  /**
+   * Run `command` only after release(): keeps a job alive for as long as a test needs.
+   * The wait is bounded (`ticks` x 0.2 s, default about 120 s, longer than
+   * testTimeout), so a crashed or killed vitest worker that never calls
+   * release() cannot leave the loop spinning (#12).
+   */
+  const hold = (command: string, ticks = 600) =>
+    `i=0; while [ ! -f '${bashPath(work)}/GO' ] && [ $i -lt ${ticks} ]; do sleep 0.2; i=$((i+1)); done; ${command}`;
   const release = () => {
     if (work) writeFileSync(join(work, "GO"), "");
   };
@@ -208,6 +213,19 @@ suite("generated scripts under real bash", () => {
     }
     expect(jobStatus(later)).toMatchObject({ state: "finished", exitCode: 0 });
     expect(logText()).toContain("done-later");
+  });
+
+  it("E170: a held job ends on its own when release() never comes", async () => {
+    fresh();
+    const rec = only(await launch(spec(hold("echo gave-up", 3))));
+    let later = rec;
+    for (let i = 0; i < 20 && jobStatus(later).state === "running"; i++) {
+      await wait(500);
+      later = only(await probe({ kind: "name", name: "main" }));
+    }
+    expect(jobStatus(later)).toMatchObject({ state: "finished", exitCode: 0 });
+    expect(existsSync(join(work, "GO"))).toBe(false);
+    expect(logText()).toContain("gave-up");
   });
 
   it("E40: marker text without this run's token does not finish the job", async () => {
